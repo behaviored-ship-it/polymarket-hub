@@ -20,6 +20,127 @@ function wrColor(n) { if(n===null)return"#505878"; return n>=60?"#00ff9d":n>=50?
 function getBlock4(h) { return Math.floor(h/4); }
 function fmtMoney(n) { return (n>=0?"+":"")+`$${Math.abs(n).toFixed(2)}`; }
 
+// ─── Backtest Engine (pure functions) ────────────────────────────────────────
+
+function buildTradeGroups(trades) {
+  const sorted = [...trades].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+  const groups = [];
+  let i = 0;
+  while (i < sorted.length) {
+    const ts = sorted[i].timestamp || 0;
+    const group = [];
+    while (i < sorted.length && (sorted[i].timestamp || 0) === ts) {
+      group.push(sorted[i]);
+      i++;
+    }
+    groups.push(group);
+  }
+  return groups;
+}
+
+function applySlippage(avgPrice, slippagePct) {
+  return Math.min(avgPrice + avgPrice * (slippagePct / 100), 0.9999);
+}
+
+function calcStake(trade, concurrentCount, config, currentBalance) {
+  const { sizingMode, fixedAmt, pct, portfolioBalance, leaderPortfolioValues, multiplier } = config;
+  let stake = 0;
+
+  if (sizingMode === "fixed") {
+    stake = parseFloat(fixedAmt) || 10;
+  } else if (sizingMode === "percentage") {
+    const leaderBought = trade.totalBought || 0;
+    stake = leaderBought * (parseFloat(pct) || 50) / 100;
+    if (stake <= 0) stake = 5;
+  } else if (sizingMode === "portfolio") {
+    const leaderPortfolio = (leaderPortfolioValues && leaderPortfolioValues.get(trade.id)) || 1;
+    const fraction = (trade.totalBought || 0) / leaderPortfolio;
+    stake = fraction * (parseFloat(portfolioBalance) || currentBalance) * (multiplier || 1);
+    if (stake <= 0) stake = 5;
+  }
+
+  stake = stake / concurrentCount;
+  stake = Math.min(stake, currentBalance);
+  return stake;
+}
+
+function checkMarketCap(marketKey, currentExposure, stake, config) {
+  const { marketCapEnabled, marketCapAmt } = config;
+  if (!marketCapEnabled) return { skip: false, updatedExposure: currentExposure + stake };
+  if (currentExposure >= marketCapAmt) return { skip: true, updatedExposure: currentExposure };
+  return { skip: false, updatedExposure: currentExposure + stake };
+}
+
+function runBacktestPure(filteredTrades, config) {
+  if (!filteredTrades || filteredTrades.length === 0) return null;
+
+  const { startBal, slippagePct, marketCapEnabled, marketCapAmt } = config;
+
+  let balance = parseFloat(startBal) || 100;
+  const startBalance = balance;
+  const equity = [{ i: 0, bal: balance, date: "", hour: null }];
+  let wins = 0, losses = 0, peak = balance, maxDD = 0;
+  const marketExposure = {};
+  let tradeIndex = 0;
+
+  const groups = buildTradeGroups(filteredTrades);
+
+  for (const group of groups) {
+    const concurrentCount = group.length;
+    for (const t of group) {
+      tradeIndex++;
+      const marketKey = (t.title || "unknown").toLowerCase();
+      const avgPrice = t.avgPrice > 0 && t.avgPrice < 1 ? t.avgPrice : 0.5;
+      const effectivePrice = applySlippage(avgPrice, slippagePct);
+
+      // Market cap check (before sizing)
+      const currentExposure = marketExposure[marketKey] || 0;
+      if (marketCapEnabled && currentExposure >= marketCapAmt) {
+        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
+        continue;
+      }
+
+      const stake = calcStake(t, concurrentCount, config, balance);
+
+      if (stake <= 0) {
+        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
+        continue;
+      }
+
+      // Track market exposure post-sizing
+      if (marketCapEnabled) {
+        marketExposure[marketKey] = currentExposure + stake;
+      }
+
+      if (t.result === "win") {
+        balance += stake * (1 - effectivePrice) / effectivePrice;
+        wins++;
+      } else {
+        balance -= stake;
+        losses++;
+      }
+
+      balance = Math.max(0, balance);
+      if (balance > peak) peak = balance;
+      const dd = ((peak - balance) / peak) * 100;
+      if (dd > maxDD) maxDD = dd;
+
+      equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
+    }
+  }
+
+  return {
+    startBal: startBalance,
+    endBal: balance,
+    roi: ((balance - startBalance) / startBalance) * 100,
+    wins,
+    losses,
+    maxDD,
+    equity,
+    total: wins + losses,
+  };
+}
+
 // ─── Persistent Storage Helpers ──────────────────────────────────────────────
 async function storageSave(key, value) {
   try { await window.storage.set(key, JSON.stringify(value)); } catch(_) {}
@@ -101,6 +222,7 @@ export default function App() {
   const [btFixedAmt, setBtFixedAmt] = useState(10);
   const [btPct, setBtPct] = useState(50);
   const [btPortfolioBalance, setBtPortfolioBalance] = useState(100);
+  const [btMultiplier, setBtMultiplier] = useState(1);
   const [btMode, setBtMode] = useState("block");
   const [btBlock, setBtBlock] = useState(0);
   const [btDateFrom, setBtDateFrom] = useState("2026-02-19");
@@ -297,97 +419,23 @@ export default function App() {
     return map;
   }, [trades]);
 
-  // ── Backtest Engine ───────────────────────────────────────────────────────────
+  // ── Backtest runner (builds config, calls pure engine) ────────────────────
   const runBacktest = useCallback((filteredTrades) => {
-    if(filteredTrades.length===0) return null;
-    // Sort by timestamp for concurrent detection
-    const sorted = [...filteredTrades].sort((a,b)=>(a.timestamp||0)-(b.timestamp||0));
-    let balance=parseFloat(btStartBal)||100;
-    const startBal=balance;
-    const equity=[{i:0,bal:balance,date:"",hour:null}];
-    let wins=0,losses=0,peak=balance,maxDD=0;
-    const slippagePct = parseFloat(btSlippage)||0;
-    const marketCapEnabled = btMarketCapEnabled && parseFloat(btMarketCap)>0;
-    const marketCapAmt = marketCapEnabled ? parseFloat(btMarketCap) : Infinity;
-
-    // #4: Group trades by timestamp for concurrent modeling
-    const groups = [];
-    let i = 0;
-    while(i < sorted.length) {
-      const ts = sorted[i].timestamp||0;
-      const group = [];
-      while(i < sorted.length && (sorted[i].timestamp||0) === ts) { group.push(sorted[i]); i++; }
-      groups.push(group);
-    }
-
-    // Track per-market exposure for cap (#6)
-    const marketExposure = {};
-    let tradeIndex = 0;
-
-    for(const group of groups) {
-      const concurrentCount = group.length; // #4: split stake across concurrent trades
-      for(const t of group) {
-        tradeIndex++;
-        const marketKey = (t.title||"unknown").toLowerCase();
-        const avgPrice = t.avgPrice>0&&t.avgPrice<1?t.avgPrice:0.5;
-        // #7: slippage increases effective entry price → lower win payout
-        const effectivePrice = Math.min(avgPrice + (avgPrice * slippagePct/100), 0.9999);
-
-        // #6: market cap check
-        if(marketCapEnabled) {
-          const currentExposure = marketExposure[marketKey] || 0;
-          if(currentExposure >= marketCapAmt) {
-            equity.push({i:tradeIndex,bal:parseFloat(balance.toFixed(2)),date:t.dateET||"",hour:t.hourET??null});
-            continue;
-          }
-        }
-
-        let stake=0;
-        if(btSizingMode==="fixed") {
-          stake=parseFloat(btFixedAmt)||10;
-        } else if(btSizingMode==="percentage") {
-          // % of leader's totalBought
-          const leaderBought = t.totalBought||0;
-          stake = leaderBought * (parseFloat(btPct)||50) / 100;
-          if(stake<=0) stake=5;
-        } else if(btSizingMode==="portfolio") {
-          // (leader trade size / leader portfolio value) × user balance
-          const leaderPortfolio = leaderPortfolioValues.get(t.id) || 1;
-          const leaderTradeFraction = (t.totalBought||0) / leaderPortfolio;
-          stake = leaderTradeFraction * (parseFloat(btPortfolioBalance)||balance);
-          if(stake<=0) stake=5;
-        }
-
-        // #4: divide stake by concurrent count
-        stake = stake / concurrentCount;
-        stake = Math.min(stake, balance);
-
-        if(stake<=0) {
-          equity.push({i:tradeIndex,bal:parseFloat(balance.toFixed(2)),date:t.dateET||"",hour:t.hourET??null});
-          continue;
-        }
-
-        // #6: track market exposure
-        if(marketCapEnabled) {
-          marketExposure[marketKey] = (marketExposure[marketKey]||0) + stake;
-        }
-
-        if(t.result==="win") {
-          balance += stake*(1-effectivePrice)/effectivePrice;
-          wins++;
-        } else {
-          balance -= stake;
-          losses++;
-        }
-        balance=Math.max(0,balance);
-        if(balance>peak) peak=balance;
-        const dd=((peak-balance)/peak)*100;
-        if(dd>maxDD) maxDD=dd;
-        equity.push({i:tradeIndex,bal:parseFloat(balance.toFixed(2)),date:t.dateET||"",hour:t.hourET??null});
-      }
-    }
-    return{startBal,endBal:balance,roi:((balance-startBal)/startBal)*100,wins,losses,maxDD,equity,total:wins+losses};
-  },[btStartBal,btSizingMode,btFixedAmt,btPct,btPortfolioBalance,btSlippage,btMarketCapEnabled,btMarketCap,leaderPortfolioValues]);
+    const config = {
+      startBal: btStartBal,
+      sizingMode: btSizingMode,
+      fixedAmt: btFixedAmt,
+      pct: btPct,
+      portfolioBalance: btPortfolioBalance,
+      multiplier: parseFloat(btMultiplier) || 1,
+      slippagePct: parseFloat(btSlippage) || 0,
+      marketCapEnabled: btMarketCapEnabled && parseFloat(btMarketCap) > 0,
+      marketCapAmt: parseFloat(btMarketCap) || Infinity,
+      leaderPortfolioValues,
+    };
+    return runBacktestPure(filteredTrades, config);
+  }, [btStartBal, btSizingMode, btFixedAmt, btPct, btPortfolioBalance, btMultiplier, btSlippage,
+      btMarketCapEnabled, btMarketCap, leaderPortfolioValues]);
 
   // ── #2: Filter logic with hourly multi-select ─────────────────────────────
   const btFilteredTrades=useMemo(()=>{
@@ -842,12 +890,29 @@ export default function App() {
                   </div>
                 )}
                 {btSizingMode==="portfolio"&&(
-                  <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  <div style={{display:"flex",flexDirection:"column",gap:8}}>
                     <div style={{display:"flex",alignItems:"center",gap:8}}>
                       <span style={{fontSize:12,color:"#b0bcd0"}}>YOUR BALANCE $</span>
                       <input type="number" value={btPortfolioBalance} onChange={e=>setBtPortfolioBalance(e.target.value)} style={{...S.inp,width:90}}/>
                     </div>
-                    <div style={{fontSize:11,color:"#7080a0"}}>Stake = (leader trade / leader portfolio) × your balance</div>
+                    <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                      <span style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MULTIPLIER</span>
+                      <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
+                        {[0.25,0.5,1,2,3].map(m=>(
+                          <button key={m} onClick={()=>setBtMultiplier(m)}
+                            style={{...S.seg(parseFloat(btMultiplier)===m),fontSize:11,padding:"4px 10px"}}>
+                            {m}x
+                          </button>
+                        ))}
+                        <input
+                          type="number" value={btMultiplier}
+                          onChange={e=>setBtMultiplier(e.target.value)}
+                          min="0.01" step="0.01"
+                          style={{...S.inp,width:65,marginLeft:4}}
+                        />
+                      </div>
+                    </div>
+                    <div style={{fontSize:11,color:"#7080a0"}}>Stake = (leader trade / leader portfolio) × your balance × multiplier</div>
                     <div style={{fontSize:11,color:"#7080a0"}}>Leader portfolio reconstructed trade-by-trade from totalBought − losses</div>
                   </div>
                 )}
