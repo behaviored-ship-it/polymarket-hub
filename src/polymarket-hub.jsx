@@ -1,16 +1,16 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── Constants ───────────────────────────────────────────────────────────────
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const BLOCK4_LABELS = ["12AM–4AM","4AM–8AM","8AM–12PM","12PM–4PM","4PM–8PM","8PM–12AM"];
 const HOUR_LABELS = Array.from({length:24},(_,i)=>i===0?"12AM":i<12?`${i}AM`:i===12?"12PM":`${i-12}PM`);
 const TARGET_WALLET = "0x428b3f163E831f4d57D9589Bf6e94c64Ce9C6b7a";
 const STORAGE_KEY = "polymarket-hub-trades";
-const WALLET_KEY  = "polymarket-hub-wallet";
+const WALLET_KEY = "polymarket-hub-wallet";
 const PROXY_BASE  = "https://polymarket-hub.vercel.app/api/positions";
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 function toET(ts) { return new Date(new Date(ts*1000).toLocaleString("en-US",{timeZone:"America/New_York"})); }
 function tsToETDate(ts) { const d=toET(ts); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
 function tsToETHour(ts) { return toET(ts).getHours(); }
@@ -20,7 +20,7 @@ function wrColor(n) { if(n===null)return"#505878"; return n>=60?"#00ff9d":n>=50?
 function getBlock4(h) { return Math.floor(h/4); }
 function fmtMoney(n) { return (n>=0?"+":"")+`$${Math.abs(n).toFixed(2)}`; }
 
-// ─── Persistent Storage Helpers ───────────────────────────────────────────────
+// ─── Persistent Storage Helpers ──────────────────────────────────────────────
 async function storageSave(key, value) {
   try { await window.storage.set(key, JSON.stringify(value)); } catch(_) {}
 }
@@ -31,7 +31,7 @@ async function storageDel(key) {
   try { await window.storage.delete(key); } catch(_) {}
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── Sub-components ──────────────────────────────────────────────────────────
 function WRBar({win,lose,highlight}) {
   const num=pctNum(win,lose);
   if(num===null) return <span style={{color:"#505880",fontSize:15}}>—</span>;
@@ -65,57 +65,63 @@ function NightAlert({nightNum,dayNum}) {
   return null;
 }
 
-// ─── Main App ─────────────────────────────────────────────────────────────────
+// ─── Main App ────────────────────────────────────────────────────────────────
 export default function App() {
-  const [trades, setTrades]             = useState([]);
-  const [storageStatus, setStorageStatus] = useState("loading"); // loading|ready|saving|saved|error
-  const [lastSaved, setLastSaved]       = useState(null);
-  const [mainTab, setMainTab]           = useState("wr");
-  const [walletAddr, setWalletAddr]     = useState(TARGET_WALLET);
-  const [walletLabel, setWalletLabel]   = useState("");
-  const [fetchStatus, setFetchStatus]   = useState("idle");
-  const [fetchMsg, setFetchMsg]         = useState("");
-
-  // WR state
-  const [view, setView]                 = useState("4hr");
-  const [wrSubTab, setWrSubTab]         = useState("dashboard");
-  const [showRolling, setShowRolling]   = useState(false);
-
-  // Manual/bulk
-  const [manualDate, setManualDate]     = useState(()=>{ const d=toET(Math.floor(Date.now()/1000)); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; });
-  const [manualHour, setManualHour]     = useState(0);
+  const [trades, setTrades] = useState([]);
+  const [storageStatus, setStorageStatus] = useState("loading");
+  const [lastSaved, setLastSaved] = useState(null);
+  const [mainTab, setMainTab] = useState("wr");
+  const [walletAddr, setWalletAddr] = useState(TARGET_WALLET);
+  const [walletLabel, setWalletLabel] = useState("");
+  const [fetchStatus, setFetchStatus] = useState("idle");
+  const [fetchMsg, setFetchMsg] = useState("");
+  const [view, setView] = useState("4hr");
+  const [wrSubTab, setWrSubTab] = useState("dashboard");
+  const [showRolling, setShowRolling] = useState(false);
+  const [manualDate, setManualDate] = useState(()=>{
+    const d=toET(Math.floor(Date.now()/1000));
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+  });
+  const [manualHour, setManualHour] = useState(0);
   const [manualResult, setManualResult] = useState("win");
-  const [manualCount, setManualCount]   = useState(1);
-  const [bulkText, setBulkText]         = useState("");
-  const [bulkError, setBulkError]       = useState("");
+  const [manualCount, setManualCount] = useState(1);
+  const [bulkText, setBulkText] = useState("");
+  const [bulkError, setBulkError] = useState("");
+  const [pnlData, setPnlData] = useState([]);
+  const [openPos, setOpenPos] = useState([]);
+  const [pnlStatus, setPnlStatus] = useState("idle");
+  const [pnlMsg, setPnlMsg] = useState("");
+  const [pnlFilter, setPnlFilter] = useState("Bitcoin Up or Down");
+  const [pnlHours, setPnlHours] = useState(48);
 
-  // PnL state
-  const [pnlData, setPnlData]           = useState([]);
-  const [openPos, setOpenPos]           = useState([]);
-  const [pnlStatus, setPnlStatus]       = useState("idle");
-  const [pnlMsg, setPnlMsg]             = useState("");
-  const [pnlFilter, setPnlFilter]       = useState("Bitcoin Up or Down");
-  const [pnlHours, setPnlHours]         = useState(48);
-
-  // Backtest state
-  const [btStartBal, setBtStartBal]     = useState(100);
+  // ── Backtest state ──────────────────────────────────────────────────────────
+  const [btStartBal, setBtStartBal] = useState(100);
+  // Sizing modes: fixed | percentage | portfolio
   const [btSizingMode, setBtSizingMode] = useState("fixed");
-  const [btFixedAmt, setBtFixedAmt]     = useState(10);
-  const [btPct, setBtPct]               = useState(2);
-  const [btMode, setBtMode]             = useState("block");
-  const [btBlock, setBtBlock]           = useState(0);
-  const [btDateFrom, setBtDateFrom]     = useState("2026-02-19");
-  const [btDateTo, setBtDateTo]         = useState("2026-03-06");
+  const [btFixedAmt, setBtFixedAmt] = useState(10);
+  const [btPct, setBtPct] = useState(50);
+  const [btPortfolioBalance, setBtPortfolioBalance] = useState(100);
+  const [btMode, setBtMode] = useState("block");
+  const [btBlock, setBtBlock] = useState(0);
+  const [btDateFrom, setBtDateFrom] = useState("2026-02-19");
+  const [btDateTo, setBtDateTo] = useState("2026-03-06");
   const [btCustomBlock, setBtCustomBlock] = useState(0);
+  // #2 — hourly multi-select
+  const [btHourlyExpanded, setBtHourlyExpanded] = useState(false);
+  const [btSelectedHours, setBtSelectedHours] = useState([]);
+  // #6 — single market dollar cap
+  const [btMarketCap, setBtMarketCap] = useState("");
+  const [btMarketCapEnabled, setBtMarketCapEnabled] = useState(false);
+  // #7 — slippage
+  const [btSlippage, setBtSlippage] = useState(0);
 
-  // ── Auto-load on mount ───────────────────────────────────────────────────────
+  // ── Auto-load on mount ──────────────────────────────────────────────────────
   useEffect(() => {
     (async () => {
       setStorageStatus("loading");
       try {
         const savedWallet = await storageLoad(WALLET_KEY);
         if (savedWallet) setWalletAddr(savedWallet);
-
         const savedTrades = await storageLoad(STORAGE_KEY);
         if (savedTrades && Array.isArray(savedTrades) && savedTrades.length > 0) {
           setTrades(savedTrades);
@@ -124,15 +130,13 @@ export default function App() {
         } else {
           setStorageStatus("ready");
         }
-      } catch(_) {
-        setStorageStatus("error");
-      }
+      } catch(_) { setStorageStatus("error"); }
     })();
   }, []);
 
-  // ── Auto-save whenever trades change ────────────────────────────────────────
+  // ── Auto-save whenever trades change ───────────────────────────────────────
   useEffect(() => {
-    if (storageStatus === "loading") return; // don't save during initial load
+    if (storageStatus === "loading") return;
     if (trades.length === 0) return;
     setStorageStatus("saving");
     const timeout = setTimeout(async () => {
@@ -142,14 +146,12 @@ export default function App() {
         setLastSaved(new Date().toLocaleTimeString());
         setStorageStatus("saved");
         setTimeout(() => setStorageStatus("ready"), 2000);
-      } catch(_) {
-        setStorageStatus("error");
-      }
-    }, 800); // debounce 800ms
+      } catch(_) { setStorageStatus("error"); }
+    }, 800);
     return () => clearTimeout(timeout);
   }, [trades]);
 
-  // ── Clear stored data ────────────────────────────────────────────────────────
+  // ── Clear stored data ───────────────────────────────────────────────────────
   const clearStorage = async () => {
     await storageDel(STORAGE_KEY);
     await storageDel(WALLET_KEY);
@@ -158,7 +160,7 @@ export default function App() {
     setStorageStatus("ready");
   };
 
-  // ── Fetch WR ─────────────────────────────────────────────────────────────────
+  // ── Fetch WR ────────────────────────────────────────────────────────────────
   const fetchWR = useCallback(async () => {
     const address = walletAddr.trim();
     if (!address.startsWith("0x")) { setFetchStatus("error"); setFetchMsg("Invalid address"); return; }
@@ -176,12 +178,22 @@ export default function App() {
         if(data.length<50) break;
         offset+=50;
       }
-      const classified=[];
-      let skipped=0;
+      const classified=[]; let skipped=0;
       for(const t of all) {
         const p=parseFloat(t.realizedPnl);
         if(p===0){skipped++;continue;}
-        classified.push({ id:crypto.randomUUID(), dateET:tsToETDate(t.timestamp), hourET:tsToETHour(t.timestamp), result:p>0?"win":"loss", avgPrice:parseFloat(t.avgPrice||0.5), size:parseFloat(t.size||0), realizedPnl:p });
+        classified.push({
+          id:crypto.randomUUID(),
+          dateET:tsToETDate(t.timestamp),
+          hourET:tsToETHour(t.timestamp),
+          result:p>0?"win":"loss",
+          avgPrice:parseFloat(t.avgPrice||0.5),
+          size:parseFloat(t.size||0),
+          realizedPnl:p,
+          totalBought:parseFloat(t.totalBought||0),
+          timestamp:t.timestamp,
+          title:t.title||""
+        });
       }
       setTrades(classified);
       setWalletLabel(address.slice(0,6)+"…"+address.slice(-4));
@@ -196,7 +208,7 @@ export default function App() {
     }
   }, [walletAddr]);
 
-  // ── Fetch PnL ─────────────────────────────────────────────────────────────────
+  // ── Fetch PnL ───────────────────────────────────────────────────────────────
   const fetchPnL = useCallback(async () => {
     const address=walletAddr.trim();
     if(!address.startsWith("0x")) return;
@@ -206,8 +218,7 @@ export default function App() {
       let all=[], offset=0;
       while(true) {
         const url=`${PROXY_BASE}?wallet=${address.toLowerCase()}&offset=${offset}&type=closed&sort=DESC`;
-        const res=await fetch(url);
-        const data=await res.json();
+        const res=await fetch(url); const data=await res.json();
         if(!Array.isArray(data)||data.length===0) break;
         const inWindow=data.filter(p=>p.timestamp>=cutoff&&(pnlFilter===""||( p.title||"").toLowerCase().includes(pnlFilter.toLowerCase())));
         all=all.concat(inWindow);
@@ -225,7 +236,7 @@ export default function App() {
     } catch(err){ setPnlStatus("error"); setPnlMsg(`Error: ${err.message}`); }
   }, [walletAddr,pnlHours,pnlFilter]);
 
-  // ── WR Stats ──────────────────────────────────────────────────────────────────
+  // ── WR Stats ─────────────────────────────────────────────────────────────────
   const stats = useMemo(()=>{
     const byHour=Array.from({length:24},()=>({w:0,l:0,byDate:{}}));
     const byDate={};
@@ -256,7 +267,7 @@ export default function App() {
   const bestHour=useMemo(()=>{let best=null,bestP=-1;for(let h=0;h<24;h++){const{w,l}=stats.byHour[h];if(w+l<3)continue;const p=pctNum(w,l);if(p>bestP){bestP=p;best=h;}}return best;},[stats]);
   const bestBlock=useMemo(()=>{let best=null,bestP=-1;for(let b=0;b<6;b++){const{w,l}=stats.byBlock[b];if(w+l<3)continue;const p=pctNum(w,l);if(p>bestP){bestP=p;best=b;}}return best;},[stats]);
 
-  // ── PnL Stats ─────────────────────────────────────────────────────────────────
+  // ── PnL Stats ────────────────────────────────────────────────────────────────
   const pnlStats=useMemo(()=>{
     let realized=0;
     const byBlock=Array.from({length:6},()=>({pnl:0,count:0,w:0,l:0}));
@@ -273,46 +284,128 @@ export default function App() {
     return{realized,unrealized,total:realized+unrealized,byBlock,night,day};
   },[pnlData,openPos]);
 
+  // ── Leader portfolio reconstruction (for portfolio-weighted sizing) ──────────
+  const leaderPortfolioValues = useMemo(() => {
+    const sorted = [...trades].sort((a,b) => (a.timestamp||0)-(b.timestamp||0));
+    let cumulativeBought = 0;
+    const map = new Map();
+    for (const t of sorted) {
+      cumulativeBought += (t.totalBought || 0);
+      const portfolioVal = Math.max(cumulativeBought - (t.realizedPnl < 0 ? Math.abs(t.realizedPnl) : 0), 1);
+      map.set(t.id, portfolioVal);
+    }
+    return map;
+  }, [trades]);
+
   // ── Backtest Engine ───────────────────────────────────────────────────────────
   const runBacktest = useCallback((filteredTrades) => {
     if(filteredTrades.length===0) return null;
+    // Sort by timestamp for concurrent detection
+    const sorted = [...filteredTrades].sort((a,b)=>(a.timestamp||0)-(b.timestamp||0));
     let balance=parseFloat(btStartBal)||100;
     const startBal=balance;
-    const equity=[{i:0,bal:balance}];
+    const equity=[{i:0,bal:balance,date:"",hour:null}];
     let wins=0,losses=0,peak=balance,maxDD=0;
-    for(let i=0;i<filteredTrades.length;i++) {
-      const t=filteredTrades[i];
-      const avgPrice=t.avgPrice>0&&t.avgPrice<1?t.avgPrice:0.5;
-      let stake=0;
-      if(btSizingMode==="fixed") stake=parseFloat(btFixedAmt)||10;
-      else if(btSizingMode==="pct") stake=balance*(parseFloat(btPct)||2)/100;
-      else stake=t.size>0?t.size*avgPrice:5; // wallet mode: fallback $5 when size=0.0000
-      stake=Math.min(stake,balance);
-      if(t.result==="win") { balance+=stake*(1-avgPrice)/avgPrice; wins++; }
-      else { balance-=stake; losses++; }
-      balance=Math.max(0,balance);
-      if(balance>peak) peak=balance;
-      const dd=((peak-balance)/peak)*100;
-      if(dd>maxDD) maxDD=dd;
-      equity.push({i:i+1,bal:parseFloat(balance.toFixed(2))});
+    const slippagePct = parseFloat(btSlippage)||0;
+    const marketCapEnabled = btMarketCapEnabled && parseFloat(btMarketCap)>0;
+    const marketCapAmt = marketCapEnabled ? parseFloat(btMarketCap) : Infinity;
+
+    // #4: Group trades by timestamp for concurrent modeling
+    const groups = [];
+    let i = 0;
+    while(i < sorted.length) {
+      const ts = sorted[i].timestamp||0;
+      const group = [];
+      while(i < sorted.length && (sorted[i].timestamp||0) === ts) { group.push(sorted[i]); i++; }
+      groups.push(group);
+    }
+
+    // Track per-market exposure for cap (#6)
+    const marketExposure = {};
+    let tradeIndex = 0;
+
+    for(const group of groups) {
+      const concurrentCount = group.length; // #4: split stake across concurrent trades
+      for(const t of group) {
+        tradeIndex++;
+        const marketKey = (t.title||"unknown").toLowerCase();
+        const avgPrice = t.avgPrice>0&&t.avgPrice<1?t.avgPrice:0.5;
+        // #7: slippage increases effective entry price → lower win payout
+        const effectivePrice = Math.min(avgPrice + (avgPrice * slippagePct/100), 0.9999);
+
+        // #6: market cap check
+        if(marketCapEnabled) {
+          const currentExposure = marketExposure[marketKey] || 0;
+          if(currentExposure >= marketCapAmt) {
+            equity.push({i:tradeIndex,bal:parseFloat(balance.toFixed(2)),date:t.dateET||"",hour:t.hourET??null});
+            continue;
+          }
+        }
+
+        let stake=0;
+        if(btSizingMode==="fixed") {
+          stake=parseFloat(btFixedAmt)||10;
+        } else if(btSizingMode==="percentage") {
+          // % of leader's totalBought
+          const leaderBought = t.totalBought||0;
+          stake = leaderBought * (parseFloat(btPct)||50) / 100;
+          if(stake<=0) stake=5;
+        } else if(btSizingMode==="portfolio") {
+          // (leader trade size / leader portfolio value) × user balance
+          const leaderPortfolio = leaderPortfolioValues.get(t.id) || 1;
+          const leaderTradeFraction = (t.totalBought||0) / leaderPortfolio;
+          stake = leaderTradeFraction * (parseFloat(btPortfolioBalance)||balance);
+          if(stake<=0) stake=5;
+        }
+
+        // #4: divide stake by concurrent count
+        stake = stake / concurrentCount;
+        stake = Math.min(stake, balance);
+
+        if(stake<=0) {
+          equity.push({i:tradeIndex,bal:parseFloat(balance.toFixed(2)),date:t.dateET||"",hour:t.hourET??null});
+          continue;
+        }
+
+        // #6: track market exposure
+        if(marketCapEnabled) {
+          marketExposure[marketKey] = (marketExposure[marketKey]||0) + stake;
+        }
+
+        if(t.result==="win") {
+          balance += stake*(1-effectivePrice)/effectivePrice;
+          wins++;
+        } else {
+          balance -= stake;
+          losses++;
+        }
+        balance=Math.max(0,balance);
+        if(balance>peak) peak=balance;
+        const dd=((peak-balance)/peak)*100;
+        if(dd>maxDD) maxDD=dd;
+        equity.push({i:tradeIndex,bal:parseFloat(balance.toFixed(2)),date:t.dateET||"",hour:t.hourET??null});
+      }
     }
     return{startBal,endBal:balance,roi:((balance-startBal)/startBal)*100,wins,losses,maxDD,equity,total:wins+losses};
-  },[btStartBal,btSizingMode,btFixedAmt,btPct]);
+  },[btStartBal,btSizingMode,btFixedAmt,btPct,btPortfolioBalance,btSlippage,btMarketCapEnabled,btMarketCap,leaderPortfolioValues]);
 
+  // ── #2: Filter logic with hourly multi-select ─────────────────────────────
   const btFilteredTrades=useMemo(()=>{
-    if(btMode==="block") {
-      if(btBlock===0) return trades.filter(t=>t.hourET>=0&&t.hourET<7);
-      if(btBlock===7) return trades;
-      return trades.filter(t=>getBlock4(t.hourET)===btBlock-1);
-    } else if(btMode==="all") {
-      return trades;
-    } else {
-      const inRange=trades.filter(t=>t.dateET>=btDateFrom&&t.dateET<=btDateTo);
-      if(btCustomBlock===0) return inRange.filter(t=>t.hourET>=0&&t.hourET<7);
-      if(btCustomBlock===7) return inRange;
-      return inRange.filter(t=>getBlock4(t.hourET)===btCustomBlock-1);
+    let base = trades;
+    if(btMode==="custom") {
+      base = trades.filter(t=>t.dateET>=btDateFrom&&t.dateET<=btDateTo);
     }
-  },[trades,btMode,btBlock,btDateFrom,btDateTo,btCustomBlock]);
+    if(btMode==="all") return base;
+    // Hourly multi-select takes priority
+    if(btSelectedHours.length > 0) {
+      return base.filter(t=>btSelectedHours.includes(t.hourET));
+    }
+    // Block-based fallback
+    const blockVal = btMode==="block" ? btBlock : btCustomBlock;
+    if(blockVal===0) return base.filter(t=>t.hourET>=0&&t.hourET<7);
+    if(blockVal===7) return base;
+    return base.filter(t=>getBlock4(t.hourET)===blockVal-1);
+  },[trades,btMode,btBlock,btDateFrom,btDateTo,btCustomBlock,btSelectedHours]);
 
   const allBlocksResults=useMemo(()=>{
     if(btMode!=="all") return null;
@@ -343,8 +436,7 @@ export default function App() {
     setBulkText("");
   };
 
-
-  // Inject JetBrains Mono font
+  // ── Inject JetBrains Mono font ───────────────────────────────────────────────
   useEffect(()=>{
     const link = document.createElement('link');
     link.rel = 'stylesheet';
@@ -352,7 +444,7 @@ export default function App() {
     document.head.appendChild(link);
   },[]);
 
-  // ── Styles ────────────────────────────────────────────────────────────────────
+  // ── Styles ───────────────────────────────────────────────────────────────────
   const S={
     inp:{background:"#0a0a1a",border:"1px solid #1e2040",color:"#ffffff",fontFamily:"'JetBrains Mono',monospace",fontSize:13,padding:"5px 8px",outline:"none",borderRadius:1},
     panel:{background:"#0d0d1f",border:"1px solid #1e2040",padding:"14px 16px",marginBottom:12,borderRadius:2},
@@ -363,19 +455,40 @@ export default function App() {
     mainTab:(a)=>({background:"none",border:"none",color:a?"#00ff9d":"#a0b0c8",fontFamily:"'JetBrains Mono',monospace",fontSize:13,letterSpacing:2,padding:"12px 20px",cursor:"pointer",borderBottom:a?"2px solid #00ff9d":"2px solid transparent",textTransform:"uppercase",transition:"color 0.15s"}),
     subTab:(a)=>({background:"none",border:"none",color:a?"#00ff9d":"#a0b0c8",fontFamily:"'JetBrains Mono',monospace",fontSize:11,letterSpacing:2,padding:"8px 16px",cursor:"pointer",borderBottom:a?"2px solid #00ff9d":"2px solid transparent",textTransform:"uppercase"}),
     seg:(a)=>({background:a?"#001f10":"#0d0d1f",border:`1px solid ${a?"#00ff9d":"#252845"}`,color:a?"#00ff9d":"#b0bcd0",fontFamily:"'JetBrains Mono',monospace",fontSize:11,letterSpacing:1,padding:"6px 12px",cursor:"pointer",borderRadius:3,transition:"all 0.15s"}),
+    hourBtn:(a)=>({background:a?"#001f10":"#0a0a1a",border:`1px solid ${a?"#00ff9d":"#1e2040"}`,color:a?"#00ff9d":"#7080a0",fontFamily:"'JetBrains Mono',monospace",fontSize:11,padding:"4px 7px",cursor:"pointer",borderRadius:2,minWidth:44,transition:"all 0.1s"}),
   };
+
   const statusColor={idle:"#7080a0",loading:"#f0c040",success:"#00ff9d",error:"#ff4d6d",cors:"#ff9d00"};
   const storageColors={loading:"#f0c040",ready:"#505878",saving:"#f0c040",saved:"#00ff9d",error:"#ff4d6d"};
   const storageLabels={loading:"⏳ LOADING...",ready:"",saving:"💾 SAVING...",saved:`✓ SAVED ${lastSaved||""}`,error:"⚠ STORAGE ERROR"};
 
+  // ── #2: Hour toggle helper ──────────────────────────────────────────────────
+  const toggleHour = (h) => {
+    setBtSelectedHours(prev => prev.includes(h) ? prev.filter(x=>x!==h) : [...prev, h]);
+  };
+
+  // ── #3: Equity curve custom tooltip ────────────────────────────────────────
+  const EquityTooltip = ({active,payload}) => {
+    if(!active||!payload||!payload[0]) return null;
+    const d = payload[0].payload;
+    const hourLabel = d.hour!==null && d.hour!==undefined ? HOUR_LABELS[d.hour] : "";
+    return (
+      <div style={{background:"#0d0d1f",border:"1px solid #1e2040",fontFamily:"'JetBrains Mono',monospace",fontSize:12,padding:"8px 12px"}}>
+        <div style={{color:"#7080a0",marginBottom:3}}>Trade {d.i}</div>
+        {d.date&&<div style={{color:"#c0cce0"}}>{d.date}{hourLabel?` · ${hourLabel} ET`:""}</div>}
+        <div style={{color:"#00ff9d",fontWeight:"bold",marginTop:3}}>${(d.bal||0).toFixed(2)}</div>
+      </div>
+    );
+  };
+
   return (
     <div style={{fontFamily:"'JetBrains Mono',monospace",background:"#080818",minHeight:"100vh",color:"#ffffff"}}>
 
-      {/* Header */}
+      {/* ── Header ── */}
       <div style={{background:"#0d0d1f",borderBottom:"1px solid #1e2040",padding:"12px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
         <div>
           <div style={{fontSize:15,letterSpacing:4,color:"#00ff9d",fontWeight:"bold"}}>⬡ POLYMARKET HUB</div>
-          <div style={{fontSize:11,color:"#7080a0",letterSpacing:2,marginTop:2,color:"#8090b0"}}>COPY-TRADE INTELLIGENCE DASHBOARD</div>
+          <div style={{fontSize:11,letterSpacing:2,marginTop:2,color:"#8090b0"}}>COPY-TRADE INTELLIGENCE DASHBOARD</div>
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center",flex:1,minWidth:240,maxWidth:500}}>
           <input value={walletAddr} onChange={e=>setWalletAddr(e.target.value)} placeholder="0x wallet address..." style={{...S.inp,flex:1,padding:"7px 10px"}}/>
@@ -389,7 +502,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* Fetch status bar */}
+      {/* ── Fetch status bar ── */}
       {fetchStatus!=="idle"&&(
         <div style={{background:"#0d0d1f",borderBottom:"1px solid #1e2040",padding:"6px 20px",display:"flex",alignItems:"center",gap:10}}>
           <span style={{fontSize:12,color:statusColor[fetchStatus],letterSpacing:1}}>
@@ -399,7 +512,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Restored data banner */}
+      {/* ── Restored data banner ── */}
       {storageStatus==="ready"&&trades.length>0&&fetchStatus==="idle"&&lastSaved&&(
         <div style={{background:"#001510",borderBottom:"1px solid #005528",padding:"5px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
           <span style={{fontSize:12,color:"#00cc70",letterSpacing:1}}>✓ {trades.length} TRADES RESTORED FROM STORAGE · Last saved {lastSaved}</span>
@@ -407,14 +520,16 @@ export default function App() {
         </div>
       )}
 
-      {/* Main tabs */}
+      {/* ── Main tabs ── */}
       <div style={{display:"flex",borderBottom:"1px solid #1e2040",background:"#0d0d1f"}}>
         {[["wr","WR TRACKER"],["pnl","PnL TRACKER"],["bt","BACKTEST"]].map(([k,l])=>(
           <button key={k} onClick={()=>setMainTab(k)} style={S.mainTab(mainTab===k)}>{l}</button>
         ))}
       </div>
 
-      {/* ══ WR TRACKER ══ */}
+      {/* ══════════════════════════════════════════════════════════
+          WR TRACKER
+      ══════════════════════════════════════════════════════════ */}
       {mainTab==="wr"&&(
         <div>
           <div style={{display:"flex",borderBottom:"1px solid #1e2040",background:"#0a0a1a",paddingLeft:8}}>
@@ -423,6 +538,7 @@ export default function App() {
             ))}
           </div>
           <div style={{padding:"16px 20px"}}>
+
             {wrSubTab==="dashboard"&&(
               <div>
                 <NightAlert nightNum={pctNum(stats.night.w,stats.night.l)} dayNum={pctNum(stats.day.w,stats.day.l)}/>
@@ -440,27 +556,104 @@ export default function App() {
                   ))}
                   <button onClick={()=>setShowRolling(r=>!r)} style={{...S.seg(showRolling),marginLeft:"auto"}}>7D ROLLING {showRolling?"▲":"▼"}</button>
                 </div>
-                {view==="24hr"&&(<div style={S.panel}><div style={S.secT}>OVERALL WIN RATE</div><div style={S.row(false)}><div style={S.lbl(false)}>ALL TIME</div><WRBar win={stats.total.w} lose={stats.total.l} highlight/></div>{showRolling&&(()=>{const rw=stats.rolling7ByHour.reduce((a,h)=>a+h.w,0),rl=stats.rolling7ByHour.reduce((a,h)=>a+h.l,0);return <div style={S.row(false)}><div style={{...S.lbl(false),color:"#f0c040"}}>7D ROLLING</div><WRBar win={rw} lose={rl}/></div>;})()}</div>)}
-                {view==="12hr"&&(()=>{const blocks=[{label:"NIGHT  12AM–7AM",s:stats.night},{label:"DAY  7AM–12AM",s:stats.day}];return(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>{blocks.map(({label,s})=>{const total=s.w+s.l,p=total>0?((s.w/total)*100).toFixed(1):null,col=wrColor(p!==null?parseFloat(p):null);return(<div key={label} style={{background:"#0d0d1f",border:"1px solid #1e2040",padding:"16px"}}><div style={{fontSize:11,letterSpacing:2,color:"#7080a0",marginBottom:8}}>{label}</div><div style={{fontSize:34,fontWeight:"bold",color:col}}>{p!==null?`${p}%`:"—"}</div><div style={{fontSize:12,color:"#b0bcd0",marginTop:4}}>{s.w}W / {s.l}L · {total} trades</div></div>);})}</div>);})()}
-                {view==="4hr"&&(<div style={S.panel}><div style={S.secT}>4HR BLOCKS (ET)</div>{BLOCK4_LABELS.map((label,b)=>(<div key={b} style={S.row(b===bestBlock)}><div style={S.lbl(b===bestBlock)}>{label}{b===bestBlock?" ★":""}</div><WRBar win={stats.byBlock[b].w} lose={stats.byBlock[b].l} highlight={b===bestBlock}/></div>))}{showRolling&&<><div style={{...S.secT,marginTop:14}}>7D ROLLING</div>{BLOCK4_LABELS.map((label,b)=>{const hrs=[b*4,b*4+1,b*4+2,b*4+3],rw=hrs.reduce((a,h)=>a+stats.rolling7ByHour[h].w,0),rl=hrs.reduce((a,h)=>a+stats.rolling7ByHour[h].l,0);return <div key={b} style={S.row(false)}><div style={{...S.lbl(false),color:"#f0c040"}}>{label}</div><WRBar win={rw} lose={rl}/></div>;})}</>}</div>)}
-                {view==="1hr"&&(<div style={S.panel}><div style={S.secT}>HOURLY (ET)</div>{HOURS.map(h=>(<div key={h} style={S.row(h===bestHour)}><div style={S.lbl(h===bestHour)}>{HOUR_LABELS[h]}{h===bestHour?" ★":""}</div><WRBar win={stats.byHour[h].w} lose={stats.byHour[h].l} highlight={h===bestHour}/></div>))}{showRolling&&<><div style={{...S.secT,marginTop:14}}>7D ROLLING</div>{HOURS.map(h=>(<div key={h} style={S.row(false)}><div style={{...S.lbl(false),color:"#f0c040"}}>{HOUR_LABELS[h]}</div><WRBar win={stats.rolling7ByHour[h].w} lose={stats.rolling7ByHour[h].l}/></div>))}</>}</div>)}
+                {view==="24hr"&&(
+                  <div style={S.panel}>
+                    <div style={S.secT}>OVERALL WIN RATE</div>
+                    <div style={S.row(false)}><div style={S.lbl(false)}>ALL TIME</div><WRBar win={stats.total.w} lose={stats.total.l} highlight/></div>
+                    {showRolling&&(()=>{const rw=stats.rolling7ByHour.reduce((a,h)=>a+h.w,0),rl=stats.rolling7ByHour.reduce((a,h)=>a+h.l,0);return <div style={S.row(false)}><div style={{...S.lbl(false),color:"#f0c040"}}>7D ROLLING</div><WRBar win={rw} lose={rl}/></div>;})()}
+                  </div>
+                )}
+                {view==="12hr"&&(()=>{
+                  const blocks=[{label:"NIGHT 12AM–7AM",s:stats.night},{label:"DAY 7AM–12AM",s:stats.day}];
+                  return(
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                      {blocks.map(({label,s})=>{
+                        const total=s.w+s.l,p=total>0?((s.w/total)*100).toFixed(1):null,col=wrColor(p!==null?parseFloat(p):null);
+                        return(
+                          <div key={label} style={{background:"#0d0d1f",border:"1px solid #1e2040",padding:"16px"}}>
+                            <div style={{fontSize:11,letterSpacing:2,color:"#7080a0",marginBottom:8}}>{label}</div>
+                            <div style={{fontSize:34,fontWeight:"bold",color:col}}>{p!==null?`${p}%`:"—"}</div>
+                            <div style={{fontSize:12,color:"#b0bcd0",marginTop:4}}>{s.w}W / {s.l}L · {total} trades</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+                {view==="4hr"&&(
+                  <div style={S.panel}>
+                    <div style={S.secT}>4HR BLOCKS (ET)</div>
+                    {BLOCK4_LABELS.map((label,b)=>(
+                      <div key={b} style={S.row(b===bestBlock)}>
+                        <div style={S.lbl(b===bestBlock)}>{label}{b===bestBlock?" ★":""}</div>
+                        <WRBar win={stats.byBlock[b].w} lose={stats.byBlock[b].l} highlight={b===bestBlock}/>
+                      </div>
+                    ))}
+                    {showRolling&&<>
+                      <div style={{...S.secT,marginTop:14}}>7D ROLLING</div>
+                      {BLOCK4_LABELS.map((label,b)=>{
+                        const hrs=[b*4,b*4+1,b*4+2,b*4+3],rw=hrs.reduce((a,h)=>a+stats.rolling7ByHour[h].w,0),rl=hrs.reduce((a,h)=>a+stats.rolling7ByHour[h].l,0);
+                        return <div key={b} style={S.row(false)}><div style={{...S.lbl(false),color:"#f0c040"}}>{label}</div><WRBar win={rw} lose={rl}/></div>;
+                      })}
+                    </>}
+                  </div>
+                )}
+                {view==="1hr"&&(
+                  <div style={S.panel}>
+                    <div style={S.secT}>HOURLY (ET)</div>
+                    {HOURS.map(h=>(
+                      <div key={h} style={S.row(h===bestHour)}>
+                        <div style={S.lbl(h===bestHour)}>{HOUR_LABELS[h]}{h===bestHour?" ★":""}</div>
+                        <WRBar win={stats.byHour[h].w} lose={stats.byHour[h].l} highlight={h===bestHour}/>
+                      </div>
+                    ))}
+                    {showRolling&&<>
+                      <div style={{...S.secT,marginTop:14}}>7D ROLLING</div>
+                      {HOURS.map(h=>(
+                        <div key={h} style={S.row(false)}>
+                          <div style={{...S.lbl(false),color:"#f0c040"}}>{HOUR_LABELS[h]}</div>
+                          <WRBar win={stats.rolling7ByHour[h].w} lose={stats.rolling7ByHour[h].l}/>
+                        </div>
+                      ))}
+                    </>}
+                  </div>
+                )}
               </div>
             )}
+
             {wrSubTab==="log"&&(
               <div>
                 <div style={S.panel}>
                   <div style={S.secT}>MANUAL ENTRY</div>
                   <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end"}}>
-                    {[["DATE","date",manualDate,e=>setManualDate(e.target.value)],["COUNT","number",manualCount,e=>setManualCount(Math.max(1,parseInt(e.target.value)||1))]].map(([lbl,type,val,fn])=>(<div key={lbl} style={{display:"flex",flexDirection:"column",gap:3}}><label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>{lbl}</label><input type={type} value={val} onChange={fn} style={{...S.inp,width:type==="number"?55:undefined}}/></div>))}
-                    <div style={{display:"flex",flexDirection:"column",gap:3}}><label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>HOUR (ET)</label><select value={manualHour} onChange={e=>setManualHour(parseInt(e.target.value))} style={S.inp}>{HOURS.map(h=><option key={h} value={h}>{HOUR_LABELS[h]} ({String(h).padStart(2,"0")}:00)</option>)}</select></div>
-                    <div style={{display:"flex",flexDirection:"column",gap:3}}><label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>RESULT</label><select value={manualResult} onChange={e=>setManualResult(e.target.value)} style={S.inp}><option value="win">WIN</option><option value="loss">LOSS</option></select></div>
+                    {[["DATE","date",manualDate,e=>setManualDate(e.target.value)],["COUNT","number",manualCount,e=>setManualCount(Math.max(1,parseInt(e.target.value)||1))]].map(([lbl,type,val,fn])=>(
+                      <div key={lbl} style={{display:"flex",flexDirection:"column",gap:3}}>
+                        <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>{lbl}</label>
+                        <input type={type} value={val} onChange={fn} style={{...S.inp,width:type==="number"?55:undefined}}/>
+                      </div>
+                    ))}
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>HOUR (ET)</label>
+                      <select value={manualHour} onChange={e=>setManualHour(parseInt(e.target.value))} style={S.inp}>
+                        {HOURS.map(h=><option key={h} value={h}>{HOUR_LABELS[h]} ({String(h).padStart(2,"0")}:00)</option>)}
+                      </select>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>RESULT</label>
+                      <select value={manualResult} onChange={e=>setManualResult(e.target.value)} style={S.inp}>
+                        <option value="win">WIN</option>
+                        <option value="loss">LOSS</option>
+                      </select>
+                    </div>
                     <button onClick={()=>{const n=Array.from({length:manualCount},()=>({id:crypto.randomUUID(),dateET:manualDate,hourET:manualHour,result:manualResult,avgPrice:0.5,size:0,realizedPnl:0}));setTrades(t=>[...t,...n]);}} style={S.btn("primary",false)}>ADD</button>
                   </div>
                 </div>
                 <div style={S.panel}>
                   <div style={S.secT}>BULK IMPORT</div>
                   <div style={{fontSize:12,color:"#9090b0",marginBottom:6}}>Format: <span style={{color:"#ffffff"}}>YYYY-MM-DD, HOUR, win/loss[, avgPrice, size]</span></div>
-                  <textarea value={bulkText} onChange={e=>setBulkText(e.target.value)} placeholder={"2026-03-03, 3, win, 0.6500, 0.0154\n2026-03-03, 4, loss, 0.5200, 0.0200"} style={{width:"100%",background:"#080818",border:"1px solid #1e2040",color:"#ffffff",fontFamily:"'JetBrains Mono',monospace",fontSize:13,padding:9,resize:"vertical",minHeight:90,outline:"none",boxSizing:"border-box",borderRadius:1}}/>
+                  <textarea value={bulkText} onChange={e=>setBulkText(e.target.value)}
+                    placeholder={"2026-03-03, 3, win, 0.6500, 0.0154\n2026-03-03, 4, loss, 0.5200, 0.0200"}
+                    style={{width:"100%",background:"#080818",border:"1px solid #1e2040",color:"#ffffff",fontFamily:"'JetBrains Mono',monospace",fontSize:13,padding:9,resize:"vertical",minHeight:90,outline:"none",boxSizing:"border-box",borderRadius:1}}/>
                   {bulkError&&<div style={{color:"#ff4d6d",fontSize:13,marginTop:5}}>⚠ {bulkError}</div>}
                   <div style={{marginTop:9,display:"flex",gap:9}}>
                     <button onClick={parseBulk} style={S.btn("primary",false)}>IMPORT</button>
@@ -470,6 +663,7 @@ export default function App() {
                 <div style={{fontSize:12,color:"#b0bcd0"}}>{trades.length} trades loaded · Storage: <span style={{color:storageColors[storageStatus]}}>{storageStatus}</span></div>
               </div>
             )}
+
             {wrSubTab==="history"&&(
               <div style={S.panel}>
                 <div style={S.secT}>TRADE HISTORY ({trades.length})</div>
@@ -487,19 +681,32 @@ export default function App() {
                 </div>
               </div>
             )}
+
           </div>
         </div>
       )}
 
-      {/* ══ PnL TRACKER ══ */}
+      {/* ══════════════════════════════════════════════════════════
+          PnL TRACKER
+      ══════════════════════════════════════════════════════════ */}
       {mainTab==="pnl"&&(
         <div style={{padding:"16px 20px"}}>
           <div style={S.panel}>
             <div style={S.secT}>PnL SETTINGS</div>
             <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end"}}>
-              <div style={{display:"flex",flexDirection:"column",gap:3,flex:1,minWidth:180}}><label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MARKET KEYWORD</label><input value={pnlFilter} onChange={e=>setPnlFilter(e.target.value)} style={{...S.inp,width:"100%"}} placeholder="e.g. Bitcoin Up or Down"/></div>
-              <div style={{display:"flex",flexDirection:"column",gap:3}}><label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>LOOKBACK</label><select value={pnlHours} onChange={e=>setPnlHours(parseInt(e.target.value))} style={S.inp}>{[24,48,72,168,336,720].map(h=><option key={h} value={h}>{h}h ({Math.round(h/24)}d)</option>)}</select></div>
-              <button onClick={fetchPnL} disabled={pnlStatus==="loading"} style={S.btn("primary",pnlStatus==="loading")}>{pnlStatus==="loading"?"LOADING...":"FETCH PnL"}</button>
+              <div style={{display:"flex",flexDirection:"column",gap:3,flex:1,minWidth:180}}>
+                <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MARKET KEYWORD</label>
+                <input value={pnlFilter} onChange={e=>setPnlFilter(e.target.value)} style={{...S.inp,width:"100%"}} placeholder="e.g. Bitcoin Up or Down"/>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>LOOKBACK</label>
+                <select value={pnlHours} onChange={e=>setPnlHours(parseInt(e.target.value))} style={S.inp}>
+                  {[24,48,72,168,336,720].map(h=><option key={h} value={h}>{h}h ({Math.round(h/24)}d)</option>)}
+                </select>
+              </div>
+              <button onClick={fetchPnL} disabled={pnlStatus==="loading"} style={S.btn("primary",pnlStatus==="loading")}>
+                {pnlStatus==="loading"?"LOADING...":"FETCH PnL"}
+              </button>
             </div>
             {pnlStatus!=="idle"&&<div style={{marginTop:8,fontSize:12,color:statusColor[pnlStatus]}}>{pnlMsg}</div>}
           </div>
@@ -510,60 +717,221 @@ export default function App() {
             <StatCard label="Closed Positions" value={pnlData.length} sub={`in last ${pnlHours}h`}/>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
-            {[{label:"NIGHT PnL (12AM–7AM)",d:pnlStats.night},{label:"DAY PnL (7AM–12AM)",d:pnlStats.day}].map(({label,d})=>{const total=d.w+d.l,wr=total>0?(100*d.w/total).toFixed(1):null,col=d.pnl>0?"#00ff9d":d.pnl<0?"#ff4d6d":"#7080a0";return(<div key={label} style={{background:"#0d0d1f",border:"1px solid #1e2040",padding:"14px 16px"}}><div style={{fontSize:11,letterSpacing:2,color:"#c0cce0",marginBottom:6}}>{label}</div><div style={{fontSize:26,fontWeight:"bold",color:col}}>{d.pnl>=0?"+":""}${d.pnl.toFixed(4)}</div><div style={{fontSize:12,color:"#b0bcd0",marginTop:4}}>{total>0?`${d.w}W / ${d.l}L · ${wr}% WR`:"No data"}</div></div>);})}
+            {[{label:"NIGHT PnL (12AM–7AM)",d:pnlStats.night},{label:"DAY PnL (7AM–12AM)",d:pnlStats.day}].map(({label,d})=>{
+              const total=d.w+d.l,wr=total>0?(100*d.w/total).toFixed(1):null,col=d.pnl>0?"#00ff9d":d.pnl<0?"#ff4d6d":"#7080a0";
+              return(
+                <div key={label} style={{background:"#0d0d1f",border:"1px solid #1e2040",padding:"14px 16px"}}>
+                  <div style={{fontSize:11,letterSpacing:2,color:"#c0cce0",marginBottom:6}}>{label}</div>
+                  <div style={{fontSize:26,fontWeight:"bold",color:col}}>{d.pnl>=0?"+":""}${d.pnl.toFixed(4)}</div>
+                  <div style={{fontSize:12,color:"#b0bcd0",marginTop:4}}>{total>0?`${d.w}W / ${d.l}L · ${wr}% WR`:"No data"}</div>
+                </div>
+              );
+            })}
           </div>
           <div style={S.panel}>
             <div style={S.secT}>PnL BY 4HR BLOCK</div>
-            {BLOCK4_LABELS.map((label,b)=>{const d=pnlStats.byBlock[b],col=d.pnl>0?"#00ff9d":d.pnl<0?"#ff4d6d":"#7080a0",wr=d.w+d.l>0?(100*d.w/(d.w+d.l)).toFixed(1):null;return(<div key={b} style={{...S.row(false),padding:"6px 0"}}><div style={{...S.lbl(false),minWidth:100}}>{label}</div><span style={{color:col,fontWeight:"bold",minWidth:90,fontSize:14}}>{d.pnl>=0?"+":""}${d.pnl.toFixed(4)}</span><span style={{fontSize:12,color:"#b0bcd0"}}>{d.count>0?`${d.w}W/${d.l}L ${wr}% · ${d.count} trades`:"—"}</span></div>);})}
+            {BLOCK4_LABELS.map((label,b)=>{
+              const d=pnlStats.byBlock[b],col=d.pnl>0?"#00ff9d":d.pnl<0?"#ff4d6d":"#7080a0",wr=d.w+d.l>0?(100*d.w/(d.w+d.l)).toFixed(1):null;
+              return(
+                <div key={b} style={{...S.row(false),padding:"6px 0"}}>
+                  <div style={{...S.lbl(false),minWidth:100}}>{label}</div>
+                  <span style={{color:col,fontWeight:"bold",minWidth:90,fontSize:14}}>{d.pnl>=0?"+":""}${d.pnl.toFixed(4)}</span>
+                  <span style={{fontSize:12,color:"#b0bcd0"}}>{d.count>0?`${d.w}W/${d.l}L ${wr}% · ${d.count} trades`:"—"}</span>
+                </div>
+              );
+            })}
           </div>
-          {openPos.length>0&&(<div style={S.panel}><div style={S.secT}>OPEN POSITIONS ({openPos.length})</div>{openPos.map((p,i)=>{const size=parseFloat(p.size||0),avg=parseFloat(p.avgPrice||0),cur=parseFloat(p.curPrice||0),unreal=size>0&&avg>0&&cur>0?size*(cur-avg):null,col=unreal===null?"#7080a0":unreal>=0?"#00ff9d":"#ff4d6d";return(<div key={i} style={{padding:"7px 0",borderBottom:"1px solid #131330"}}><div style={{fontSize:13,color:"#ffffff",marginBottom:3}}>{(p.title||"").slice(0,62)}{(p.title||"").length>62?"…":""}</div><div style={{fontSize:12,color:"#ffffff",display:"flex",gap:16,flexWrap:"wrap"}}><span>{size.toFixed(2)} {p.outcome}</span><span>avg {avg.toFixed(3)}</span><span>cur {cur.toFixed(3)}</span>{unreal!==null&&<span style={{color:col,fontWeight:"bold"}}>{unreal>=0?"+":""}${unreal.toFixed(4)}</span>}</div></div>);})}</div>)}
-          {pnlData.length===0&&pnlStatus!=="loading"&&(<div style={{textAlign:"center",padding:"40px 0",color:"#505880",fontSize:13,letterSpacing:2}}>SET FILTERS ABOVE AND CLICK FETCH PnL</div>)}
+          {openPos.length>0&&(
+            <div style={S.panel}>
+              <div style={S.secT}>OPEN POSITIONS ({openPos.length})</div>
+              {openPos.map((p,i)=>{
+                const size=parseFloat(p.size||0),avg=parseFloat(p.avgPrice||0),cur=parseFloat(p.curPrice||0);
+                const unreal=size>0&&avg>0&&cur>0?size*(cur-avg):null,col=unreal===null?"#7080a0":unreal>=0?"#00ff9d":"#ff4d6d";
+                return(
+                  <div key={i} style={{padding:"7px 0",borderBottom:"1px solid #131330"}}>
+                    <div style={{fontSize:13,color:"#ffffff",marginBottom:3}}>{(p.title||"").slice(0,62)}{(p.title||"").length>62?"…":""}</div>
+                    <div style={{fontSize:12,color:"#ffffff",display:"flex",gap:16,flexWrap:"wrap"}}>
+                      <span>{size.toFixed(2)} {p.outcome}</span>
+                      <span>avg {avg.toFixed(3)}</span>
+                      <span>cur {cur.toFixed(3)}</span>
+                      {unreal!==null&&<span style={{color:col,fontWeight:"bold"}}>{unreal>=0?"+":""}${unreal.toFixed(4)}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {pnlData.length===0&&pnlStatus!=="loading"&&(
+            <div style={{textAlign:"center",padding:"40px 0",color:"#505880",fontSize:13,letterSpacing:2}}>SET FILTERS ABOVE AND CLICK FETCH PnL</div>
+          )}
         </div>
       )}
 
-      {/* ══ BACKTEST ══ */}
+      {/* ══════════════════════════════════════════════════════════
+          BACKTEST
+      ══════════════════════════════════════════════════════════ */}
       {mainTab==="bt"&&(
         <div style={{padding:"16px 20px"}}>
           {trades.length===0?(
             <div style={{textAlign:"center",padding:"40px 0",color:"#505880",fontSize:13,letterSpacing:2}}>FETCH WALLET DATA FIRST (FETCH BUTTON IN HEADER)</div>
           ):(
             <div>
+
+              {/* ── COPY TRADE SETTINGS ── */}
               <div style={S.panel}>
-                <div style={S.secT}>BACKTEST SETTINGS</div>
+                <div style={S.secT}>COPY TRADE SETTINGS</div>
                 <div style={{display:"flex",gap:16,flexWrap:"wrap",alignItems:"flex-start"}}>
+
+                  {/* Starting balance */}
                   <div style={{display:"flex",flexDirection:"column",gap:3}}>
                     <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>STARTING BALANCE ($)</label>
                     <input type="number" value={btStartBal} onChange={e=>setBtStartBal(e.target.value)} style={{...S.inp,width:90}}/>
                   </div>
+
+                  {/* #7 Slippage */}
                   <div style={{display:"flex",flexDirection:"column",gap:3}}>
-                    <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>POSITION SIZING</label>
-                    <div style={{display:"flex",gap:4}}>{[["fixed","FIXED $"],["pct","% BAL"],["wallet","WALLET"]].map(([k,l])=><button key={k} onClick={()=>setBtSizingMode(k)} style={S.seg(btSizingMode===k)}>{l}</button>)}</div>
-                    {btSizingMode==="fixed"&&<div style={{display:"flex",alignItems:"center",gap:6,marginTop:4}}><span style={{fontSize:12,color:"#b0bcd0"}}>$</span><input type="number" value={btFixedAmt} onChange={e=>setBtFixedAmt(e.target.value)} style={{...S.inp,width:70}}/><span style={{fontSize:12,color:"#b0bcd0"}}>per trade</span></div>}
-                    {btSizingMode==="pct"&&<div style={{display:"flex",alignItems:"center",gap:6,marginTop:4}}><input type="number" value={btPct} onChange={e=>setBtPct(e.target.value)} style={{...S.inp,width:55}}/><span style={{fontSize:12,color:"#b0bcd0"}}>% of balance per trade</span></div>}
-                    {btSizingMode==="wallet"&&(()=>{const zeroCount=trades.filter(t=>t.size===0).length;return(<div style={{marginTop:4}}><div style={{fontSize:12,color:"#b0bcd0"}}>Uses wallet's actual contract sizes (size × avgPrice)</div>{zeroCount>0&&<div style={{fontSize:11,color:"#f0c040",marginTop:3}}>⚠ {zeroCount} trades have size=0.0000 — falling back to $5 stake for those</div>}</div>);})()}
-                  </div>
-                  <div style={{display:"flex",flexDirection:"column",gap:3,flex:1}}>
-                    <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>TIME BLOCK MODE</label>
-                    <div style={{display:"flex",gap:4,flexWrap:"wrap"}}>{[["block","SPECIFIC BLOCK"],["all","COMPARE ALL"],["custom","CUSTOM RANGE"]].map(([k,l])=><button key={k} onClick={()=>setBtMode(k)} style={S.seg(btMode===k)}>{l}</button>)}</div>
-                    {btMode==="block"&&<select value={btBlock} onChange={e=>setBtBlock(parseInt(e.target.value))} style={{...S.inp,marginTop:4}}><option value={0}>Night (12AM–7AM)</option>{BLOCK4_LABELS.map((l,b)=><option key={b} value={b+1}>{l}</option>)}<option value={7}>All 24hr</option></select>}
-                    {btMode==="custom"&&(
-                      <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:4,alignItems:"center"}}>
-                        <input type="date" value={btDateFrom} onChange={e=>setBtDateFrom(e.target.value)} style={S.inp}/>
-                        <span style={{fontSize:12,color:"#b0bcd0"}}>to</span>
-                        <input type="date" value={btDateTo} onChange={e=>setBtDateTo(e.target.value)} style={S.inp}/>
-                        <select value={btCustomBlock} onChange={e=>setBtCustomBlock(parseInt(e.target.value))} style={S.inp}><option value={0}>Night (12AM–7AM)</option>{BLOCK4_LABELS.map((l,b)=><option key={b} value={b+1}>{l}</option>)}<option value={7}>All hours</option></select>
+                    <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>SLIPPAGE (%)</label>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <input type="number" value={btSlippage} onChange={e=>setBtSlippage(e.target.value)} min="0" max="10" step="0.1" style={{...S.inp,width:60}}/>
+                      <span style={{fontSize:12,color:"#7080a0"}}>% entry</span>
+                    </div>
+                    {parseFloat(btSlippage)>0&&(
+                      <div style={{fontSize:11,color:"#f0c040",marginTop:2}}>
+                        e.g. $0.65 → ${(0.65*(1+parseFloat(btSlippage)/100)).toFixed(4)} effective
                       </div>
                     )}
                   </div>
+
+                  {/* #6 Market cap */}
+                  <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                    <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MAX $ PER MARKET</label>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <input type="checkbox" checked={btMarketCapEnabled} onChange={e=>setBtMarketCapEnabled(e.target.checked)} style={{accentColor:"#00ff9d"}}/>
+                      <input type="number" value={btMarketCap} onChange={e=>setBtMarketCap(e.target.value)} disabled={!btMarketCapEnabled}
+                        placeholder="e.g. 50" style={{...S.inp,width:70,opacity:btMarketCapEnabled?1:0.4}}/>
+                      <span style={{fontSize:12,color:"#7080a0"}}>cap</span>
+                    </div>
+                    {btMarketCapEnabled&&<div style={{fontSize:11,color:"#b0bcd0",marginTop:2}}>YES+NO sides share cap per market</div>}
+                  </div>
+
                 </div>
               </div>
 
+              {/* ── POSITION SIZING ── */}
+              <div style={S.panel}>
+                <div style={S.secT}>POSITION SIZING</div>
+                <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
+                  {[["fixed","FIXED $"],["percentage","PERCENTAGE"],["portfolio","PORTFOLIO-WEIGHTED"]].map(([k,l])=>(
+                    <button key={k} onClick={()=>setBtSizingMode(k)} style={S.seg(btSizingMode===k)}>{l}</button>
+                  ))}
+                </div>
+                {btSizingMode==="fixed"&&(
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:12,color:"#b0bcd0"}}>$</span>
+                    <input type="number" value={btFixedAmt} onChange={e=>setBtFixedAmt(e.target.value)} style={{...S.inp,width:80}}/>
+                    <span style={{fontSize:12,color:"#b0bcd0"}}>USDC per trade regardless of leader size</span>
+                  </div>
+                )}
+                {btSizingMode==="percentage"&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <input type="number" value={btPct} onChange={e=>setBtPct(e.target.value)} min="1" max="500" style={{...S.inp,width:70}}/>
+                      <span style={{fontSize:12,color:"#b0bcd0"}}>% of leader's totalBought per trade</span>
+                    </div>
+                    <div style={{fontSize:11,color:"#7080a0"}}>e.g. leader buys 100 USDC → you stake {btPct} USDC</div>
+                  </div>
+                )}
+                {btSizingMode==="portfolio"&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{fontSize:12,color:"#b0bcd0"}}>YOUR BALANCE $</span>
+                      <input type="number" value={btPortfolioBalance} onChange={e=>setBtPortfolioBalance(e.target.value)} style={{...S.inp,width:90}}/>
+                    </div>
+                    <div style={{fontSize:11,color:"#7080a0"}}>Stake = (leader trade / leader portfolio) × your balance</div>
+                    <div style={{fontSize:11,color:"#7080a0"}}>Leader portfolio reconstructed trade-by-trade from totalBought − losses</div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── TIME BLOCK MODE ── */}
+              <div style={S.panel}>
+                <div style={S.secT}>TIME BLOCK MODE</div>
+                <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
+                  {[["block","SPECIFIC BLOCK"],["all","COMPARE ALL"],["custom","CUSTOM RANGE"]].map(([k,l])=>(
+                    <button key={k} onClick={()=>{setBtMode(k);setBtSelectedHours([]);}} style={S.seg(btMode===k)}>{l}</button>
+                  ))}
+                </div>
+
+                {(btMode==="block"||btMode==="custom")&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:8}}>
+
+                    {/* Date range (custom mode only) */}
+                    {btMode==="custom"&&(
+                      <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                        <input type="date" value={btDateFrom} onChange={e=>setBtDateFrom(e.target.value)} style={S.inp}/>
+                        <span style={{fontSize:12,color:"#b0bcd0"}}>to</span>
+                        <input type="date" value={btDateTo} onChange={e=>setBtDateTo(e.target.value)} style={S.inp}/>
+                      </div>
+                    )}
+
+                    {/* Block dropdown — hidden when hourly select is active */}
+                    {btSelectedHours.length===0&&(
+                      <select
+                        value={btMode==="block"?btBlock:btCustomBlock}
+                        onChange={e=>{btMode==="block"?setBtBlock(parseInt(e.target.value)):setBtCustomBlock(parseInt(e.target.value));}}
+                        style={{...S.inp,maxWidth:240}}>
+                        <option value={0}>Night (12AM–7AM)</option>
+                        {BLOCK4_LABELS.map((l,b)=><option key={b} value={b+1}>{l}</option>)}
+                        <option value={7}>All hours</option>
+                      </select>
+                    )}
+
+                    {/* #2: Hourly multi-select */}
+                    <div>
+                      <button onClick={()=>setBtHourlyExpanded(x=>!x)} style={{...S.seg(btSelectedHours.length>0),fontSize:11,display:"flex",alignItems:"center",gap:6}}>
+                        HOURLY SELECT {btHourlyExpanded?"▲":"▼"}
+                        {btSelectedHours.length>0&&<span style={{color:"#00ff9d",marginLeft:4}}>{btSelectedHours.length} selected</span>}
+                      </button>
+                      {btHourlyExpanded&&(
+                        <div style={{marginTop:8}}>
+                          <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:8}}>
+                            {HOURS.map(h=>(
+                              <button key={h} onClick={()=>toggleHour(h)} style={S.hourBtn(btSelectedHours.includes(h))}>
+                                {HOUR_LABELS[h]}
+                              </button>
+                            ))}
+                          </div>
+                          <div style={{display:"flex",gap:6}}>
+                            <button onClick={()=>setBtSelectedHours([...HOURS])} style={{...S.btn("sec",false),fontSize:11,padding:"4px 10px"}}>ALL</button>
+                            <button onClick={()=>setBtSelectedHours([])} style={{...S.btn("sec",false),fontSize:11,padding:"4px 10px"}}>NONE</button>
+                            <button onClick={()=>setBtSelectedHours(HOURS.filter(h=>h>=0&&h<7))} style={{...S.btn("sec",false),fontSize:11,padding:"4px 10px"}}>NIGHT</button>
+                            <button onClick={()=>setBtSelectedHours(HOURS.filter(h=>h>=7))} style={{...S.btn("sec",false),fontSize:11,padding:"4px 10px"}}>DAY</button>
+                          </div>
+                          {btSelectedHours.length>0&&(
+                            <div style={{fontSize:11,color:"#00ff9d",marginTop:5}}>
+                              Backtesting hours: {[...btSelectedHours].sort((a,b)=>a-b).map(h=>HOUR_LABELS[h]).join(", ")}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                  </div>
+                )}
+              </div>
+
+              {/* ── COMPARE ALL RESULTS ── */}
               {btMode==="all"&&allBlocksResults&&(
                 <div style={S.panel}>
-                  <div style={S.secT}>ALL BLOCKS COMPARISON — ${parseFloat(btStartBal).toFixed(0)} START · {btSizingMode==="fixed"?`$${btFixedAmt}/trade`:btSizingMode==="pct"?`${btPct}% per trade`:"wallet sizing"}</div>
+                  <div style={S.secT}>ALL BLOCKS COMPARISON — ${parseFloat(btStartBal).toFixed(0)} START · {btSizingMode==="fixed"?`$${btFixedAmt}/trade`:btSizingMode==="percentage"?`${btPct}% of leader buy`:"portfolio-weighted"}</div>
                   <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:8}}>
                     {allBlocksResults.map(({label,result,tradeCount})=>{
-                      if(!result||tradeCount===0) return(<div key={label} style={{background:"#111128",border:"1px solid #1e2040",padding:"12px",borderRadius:2}}><div style={{fontSize:11,letterSpacing:2,color:"#c0cce0",marginBottom:6}}>{label}</div><div style={{fontSize:14,color:"#505880"}}>No trades</div></div>);
+                      if(!result||tradeCount===0) return(
+                        <div key={label} style={{background:"#111128",border:"1px solid #1e2040",padding:"12px",borderRadius:2}}>
+                          <div style={{fontSize:11,letterSpacing:2,color:"#c0cce0",marginBottom:6}}>{label}</div>
+                          <div style={{fontSize:14,color:"#505880"}}>No trades</div>
+                        </div>
+                      );
                       const roiCol=result.roi>=0?"#00ff9d":"#ff4d6d";
                       return(
                         <div key={label} style={{background:"#111128",border:"1px solid #1e2040",padding:"12px",borderRadius:2}}>
@@ -579,6 +947,7 @@ export default function App() {
                 </div>
               )}
 
+              {/* ── SINGLE BLOCK RESULT ── */}
               {btMode!=="all"&&btResult&&(
                 <div>
                   <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8,marginBottom:14}}>
@@ -596,7 +965,7 @@ export default function App() {
                         <LineChart data={btResult.equity} margin={{top:5,right:10,left:0,bottom:5}}>
                           <XAxis dataKey="i" hide/>
                           <YAxis domain={["auto","auto"]} tick={{fill:"#7080a0",fontSize:12}} width={55} tickFormatter={v=>`$${v}`}/>
-                          <Tooltip contentStyle={{background:"#0d0d1f",border:"1px solid #1e2040",fontFamily:"'JetBrains Mono',monospace",fontSize:12}} formatter={(v)=>[`$${v.toFixed(2)}`,"Balance"]} labelFormatter={i=>`Trade ${i}`}/>
+                          <Tooltip content={<EquityTooltip/>}/>
                           <ReferenceLine y={parseFloat(btStartBal)} stroke="#505878" strokeDasharray="4 4"/>
                           <Line type="monotone" dataKey="bal" stroke={btResult.roi>=0?"#00ff9d":"#ff4d6d"} dot={false} strokeWidth={1.5}/>
                         </LineChart>
@@ -605,11 +974,16 @@ export default function App() {
                   </div>
                 </div>
               )}
-              {btMode!=="all"&&btFilteredTrades.length===0&&(<div style={{textAlign:"center",padding:"30px 0",color:"#505880",fontSize:13,letterSpacing:2}}>NO TRADES MATCH SELECTED BLOCK / DATE RANGE</div>)}
+
+              {btMode!=="all"&&btFilteredTrades.length===0&&(
+                <div style={{textAlign:"center",padding:"30px 0",color:"#505880",fontSize:13,letterSpacing:2}}>NO TRADES MATCH SELECTED BLOCK / DATE RANGE</div>
+              )}
+
             </div>
           )}
         </div>
       )}
+
     </div>
   );
 }
