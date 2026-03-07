@@ -5,6 +5,8 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceL
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const BLOCK4_LABELS = ["12AM–4AM","4AM–8AM","8AM–12PM","12PM–4PM","4PM–8PM","8PM–12AM"];
 const HOUR_LABELS = Array.from({length:24},(_,i)=>i===0?"12AM":i<12?`${i}AM`:i===12?"12PM":`${i-12}PM`);
+const OVERLAY_COLORS = ["#00ff9d","#f0c040","#ff4d6d","#00aaff","#ff9d00","#cc44ff","#00ffff","#ff44aa"];
+
 const TARGET_WALLET = "0x428b3f163E831f4d57D9589Bf6e94c64Ce9C6b7a";
 const STORAGE_KEY = "polymarket-hub-trades";
 const WALLET_KEY = "polymarket-hub-wallet";
@@ -19,6 +21,21 @@ function pctNum(w,l) { const p=pct(w,l); return p===null?null:parseFloat(p); }
 function wrColor(n) { if(n===null)return"#505878"; return n>=60?"#00ff9d":n>=50?"#f0c040":"#ff4d6d"; }
 function getBlock4(h) { return Math.floor(h/4); }
 function fmtMoney(n) { return (n>=0?"+":"")+`$${Math.abs(n).toFixed(2)}`; }
+
+// ─── Normalise equity to 0-100 trade-progress X axis ────────────────────────
+// Each curve may have different trade counts. We normalise so all share
+// a 0–100 X axis (percent of trades completed) enabling visual comparison.
+function normalizeEquity(equity) {
+  if (!equity || equity.length < 2) return [];
+  const last = equity.length - 1;
+  return equity.map((pt, i) => ({
+    x: parseFloat(((i / last) * 100).toFixed(2)),
+    bal: pt.bal,
+    date: pt.date,
+    hour: pt.hour,
+    i: pt.i,
+  }));
+}
 
 // ─── Backtest Engine (pure functions) ────────────────────────────────────────
 
@@ -268,6 +285,8 @@ export default function App() {
   const [btDailyLimitEnabled, setBtDailyLimitEnabled] = useState(false);
   // #7 — slippage
   const [btSlippage, setBtSlippage] = useState(0);
+  // equity curve overlay
+  const [savedCurves, setSavedCurves] = useState([]);
 
   // ── Auto-load on mount ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -1126,18 +1145,114 @@ export default function App() {
                     <StatCard label="Trades" value={btResult.total} sub="in selected block"/>
                   </div>
                   <div style={S.panel}>
-                    <div style={S.secT}>EQUITY CURVE</div>
-                    {btResult.equity.length>1?(
-                      <ResponsiveContainer width="100%" height={200}>
-                        <LineChart data={btResult.equity} margin={{top:5,right:10,left:0,bottom:5}}>
-                          <XAxis dataKey="i" hide/>
-                          <YAxis domain={["auto","auto"]} tick={{fill:"#7080a0",fontSize:12}} width={55} tickFormatter={v=>`$${v}`}/>
-                          <Tooltip content={<EquityTooltip/>}/>
-                          <ReferenceLine y={parseFloat(btStartBal)} stroke="#505878" strokeDasharray="4 4"/>
-                          <Line type="monotone" dataKey="bal" stroke={btResult.roi>=0?"#00ff9d":"#ff4d6d"} dot={false} strokeWidth={1.5}/>
-                        </LineChart>
-                      </ResponsiveContainer>
-                    ):<div style={{color:"#505880",fontSize:14,padding:"20px 0",textAlign:"center"}}>Not enough data</div>}
+                    {/* ── Equity curve header + overlay controls ── */}
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,flexWrap:"wrap",gap:6}}>
+                      <div style={S.secT}>EQUITY CURVE {savedCurves.length>0&&<span style={{color:"#7080a0",fontSize:10}}>+{savedCurves.length} saved</span>}</div>
+                      <div style={{display:"flex",gap:6}}>
+                        {btResult&&btResult.equity.length>1&&(()=>{
+                          const nextColor = OVERLAY_COLORS[savedCurves.length % OVERLAY_COLORS.length];
+                          // Build label from active filters
+                          const mktLabel = btSelectedMarkets.length>0 ? btSelectedMarkets.slice(0,2).join(", ")+(btSelectedMarkets.length>2?` +${btSelectedMarkets.length-2}`:"") : "All Markets";
+                          const blockLabel = btSelectedHours.length>0
+                            ? `${btSelectedHours.length}hr`
+                            : btMode==="custom" ? `${btDateFrom}→${btDateTo}`
+                            : btBlock===0 ? "Night" : btBlock===7 ? "All hrs" : BLOCK4_LABELS[btBlock-1];
+                          const label = `${blockLabel} · ${mktLabel}`;
+                          return(
+                            <button onClick={()=>setSavedCurves(prev=>[...prev,{
+                              label,
+                              color: nextColor,
+                              equity: normalizeEquity(btResult.equity),
+                              roi: btResult.roi,
+                            }])} style={{...S.btn("sec",false),fontSize:10,padding:"3px 10px",borderColor:nextColor,color:nextColor}}>
+                              + ADD TO OVERLAY
+                            </button>
+                          );
+                        })()}
+                        {savedCurves.length>0&&(
+                          <button onClick={()=>setSavedCurves([])} style={{...S.btn("danger",false),fontSize:10,padding:"3px 10px"}}>
+                            CLEAR
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {btResult.equity.length>1?(()=>{
+                      // Normalize current run for consistent X axis with saved curves
+                      const currentNorm = normalizeEquity(btResult.equity);
+                      // Build merged dataset: array of {x} objects with each curve's bal keyed by index
+                      // Use 200 evenly spaced x points for smooth rendering
+                      const POINTS = 200;
+                      const merged = Array.from({length: POINTS+1}, (_,i) => {
+                        const x = parseFloat(((i/POINTS)*100).toFixed(2));
+                        const row = {x};
+                        // Interpolate current curve
+                        const ci = Math.round((i/POINTS)*(currentNorm.length-1));
+                        row["live"] = currentNorm[Math.min(ci, currentNorm.length-1)]?.bal ?? null;
+                        // Interpolate saved curves
+                        savedCurves.forEach((curve, ci2) => {
+                          const si = Math.round((i/POINTS)*(curve.equity.length-1));
+                          row[`saved_${ci2}`] = curve.equity[Math.min(si, curve.equity.length-1)]?.bal ?? null;
+                        });
+                        return row;
+                      });
+
+                      return(
+                        <div>
+                          <ResponsiveContainer width="100%" height={220}>
+                            <LineChart data={merged} margin={{top:5,right:10,left:0,bottom:5}}>
+                              <XAxis dataKey="x" hide/>
+                              <YAxis domain={["auto","auto"]} tick={{fill:"#7080a0",fontSize:12}} width={55} tickFormatter={v=>`$${v}`}/>
+                              <Tooltip
+                                content={({active,payload})=>{
+                                  if(!active||!payload||!payload.length) return null;
+                                  return(
+                                    <div style={{background:"#0d0d1f",border:"1px solid #1e2040",fontFamily:"'JetBrains Mono',monospace",fontSize:12,padding:"8px 12px"}}>
+                                      {payload.map((p,i)=>(
+                                        <div key={i} style={{color:p.stroke||p.color,marginBottom:2}}>
+                                          <span style={{color:"#7080a0",marginRight:6}}>{p.name==="live"?"CURRENT":savedCurves[parseInt(p.name.replace("saved_",""))]?.label}</span>
+                                          ${(p.value||0).toFixed(2)}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  );
+                                }}
+                              />
+                              <ReferenceLine y={parseFloat(btStartBal)} stroke="#505878" strokeDasharray="4 4"/>
+                              {/* Live current curve — always white */}
+                              <Line type="monotone" dataKey="live" name="live"
+                                stroke="#ffffff" dot={false} strokeWidth={1.5} strokeOpacity={0.9}/>
+                              {/* Saved overlay curves */}
+                              {savedCurves.map((curve,i)=>(
+                                <Line key={i} type="monotone" dataKey={`saved_${i}`} name={`saved_${i}`}
+                                  stroke={curve.color} dot={false} strokeWidth={1.5} strokeOpacity={0.85}/>
+                              ))}
+                            </LineChart>
+                          </ResponsiveContainer>
+
+                          {/* Legend */}
+                          {savedCurves.length>0&&(
+                            <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:8,paddingTop:8,borderTop:"1px solid #1e2040"}}>
+                              {/* Current curve entry */}
+                              <div style={{display:"flex",alignItems:"center",gap:5,fontSize:11}}>
+                                <div style={{width:16,height:2,background:"#ffffff",borderRadius:1}}/>
+                                <span style={{color:"#ffffff"}}>CURRENT</span>
+                                <span style={{color:btResult.roi>=0?"#00ff9d":"#ff4d6d"}}>{btResult.roi>=0?"+":""}{btResult.roi.toFixed(1)}%</span>
+                              </div>
+                              {savedCurves.map((curve,i)=>(
+                                <div key={i} style={{display:"flex",alignItems:"center",gap:5,fontSize:11}}>
+                                  <div style={{width:16,height:2,background:curve.color,borderRadius:1}}/>
+                                  <span style={{color:"#c0cce0",maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{curve.label}</span>
+                                  <span style={{color:curve.roi>=0?"#00ff9d":"#ff4d6d"}}>{curve.roi>=0?"+":""}{curve.roi.toFixed(1)}%</span>
+                                  <button onClick={()=>setSavedCurves(prev=>prev.filter((_,j)=>j!==i))}
+                                    style={{background:"none",border:"none",color:"#505880",cursor:"pointer",fontSize:11,padding:0}}>✕</button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })():<div style={{color:"#505880",fontSize:14,padding:"20px 0",textAlign:"center"}}>Not enough data</div>}
                   </div>
                 </div>
               )}
