@@ -287,6 +287,8 @@ export default function App() {
   const [btSlippage, setBtSlippage] = useState(0);
   // equity curve overlay
   const [savedCurves, setSavedCurves] = useState([]);
+  const [pendingCurve, setPendingCurve] = useState(null); // {label, color, equity, roi, wins, losses, maxDD}
+  const [pendingName, setPendingName] = useState("");
 
   // ── Auto-load on mount ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -1159,17 +1161,19 @@ export default function App() {
                             : btBlock===0 ? "Night" : btBlock===7 ? "All hrs" : BLOCK4_LABELS[btBlock-1];
                           const label = `${blockLabel} · ${mktLabel}`;
                           return(
-                            <button onClick={()=>setSavedCurves(prev=>[...prev,{
-                              label,
-                              color: nextColor,
-                              equity: normalizeEquity(btResult.equity),
-                              roi: btResult.roi,
-                              wins: btResult.wins,
-                              losses: btResult.losses,
-                              maxDD: btResult.maxDD,
-                              startBal: btResult.startBal,
-                              endBal: btResult.endBal,
-                            }])} style={{...S.btn("sec",false),fontSize:10,padding:"3px 10px",borderColor:nextColor,color:nextColor}}>
+                            <button onClick={()=>{
+                              setPendingCurve({
+                                color: nextColor,
+                                equity: normalizeEquity(btResult.equity),
+                                roi: btResult.roi,
+                                wins: btResult.wins,
+                                losses: btResult.losses,
+                                maxDD: btResult.maxDD,
+                                startBal: btResult.startBal,
+                                endBal: btResult.endBal,
+                              });
+                              setPendingName(label);
+                            }} style={{...S.btn("sec",false),fontSize:10,padding:"3px 10px",borderColor:nextColor,color:nextColor}}>
                               + ADD TO OVERLAY
                             </button>
                           );
@@ -1345,6 +1349,66 @@ export default function App() {
 
             </div>
           )}
+        </div>
+      )}
+
+
+      {/* ── Overlay Naming Modal ── */}
+      {pendingCurve&&(
+        <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.7)",
+          display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}
+          onClick={(e)=>{if(e.target===e.currentTarget){setPendingCurve(null);setPendingName("");}}}>
+          <div style={{background:"#0d0d1f",border:`1px solid ${pendingCurve.color}`,borderRadius:4,
+            padding:"20px 24px",minWidth:340,fontFamily:"'JetBrains Mono',monospace"}}>
+            <div style={{fontSize:11,letterSpacing:3,color:"#c0cce0",marginBottom:14,textTransform:"uppercase"}}>
+              Name This Overlay
+            </div>
+            {/* Quick presets */}
+            <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:10}}>
+              {["Night","4AM–8AM","8AM–12PM","12PM–4PM","4PM–8PM","All Hours","Bitcoin","Custom"].map(p=>(
+                <button key={p} onClick={()=>setPendingName(p)}
+                  style={{...S.seg(pendingName===p),fontSize:10,padding:"3px 8px"}}>
+                  {p}
+                </button>
+              ))}
+            </div>
+            {/* Free-type input */}
+            <input
+              autoFocus
+              value={pendingName}
+              onChange={e=>setPendingName(e.target.value)}
+              onKeyDown={e=>{
+                if(e.key==="Enter"&&pendingName.trim()){
+                  setSavedCurves(prev=>[...prev,{...pendingCurve,label:pendingName.trim()}]);
+                  setPendingCurve(null);setPendingName("");
+                }
+                if(e.key==="Escape"){setPendingCurve(null);setPendingName("");}
+              }}
+              placeholder="e.g. Night · Bitcoin"
+              style={{...S.inp,width:"100%",boxSizing:"border-box",marginBottom:14,fontSize:13,padding:"8px 10px"}}
+            />
+            {/* Color swatch preview */}
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}>
+              <div style={{width:24,height:3,background:pendingCurve.color,borderRadius:2}}/>
+              <span style={{fontSize:11,color:"#7080a0"}}>
+                ROI {pendingCurve.roi>=0?"+":""}{pendingCurve.roi.toFixed(1)}% · DD {pendingCurve.maxDD.toFixed(1)}%
+              </span>
+            </div>
+            {/* Actions */}
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+              <button onClick={()=>{setPendingCurve(null);setPendingName("");}}
+                style={S.btn("sec",false)}>CANCEL</button>
+              <button
+                disabled={!pendingName.trim()}
+                onClick={()=>{
+                  setSavedCurves(prev=>[...prev,{...pendingCurve,label:pendingName.trim()}]);
+                  setPendingCurve(null);setPendingName("");
+                }}
+                style={{...S.btn("primary",!pendingName.trim()),minWidth:80}}>
+                SAVE
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
