@@ -257,6 +257,9 @@ export default function App() {
   // #2 — hourly multi-select
   const [btHourlyExpanded, setBtHourlyExpanded] = useState(false);
   const [btSelectedHours, setBtSelectedHours] = useState([]);
+  // market filter
+  const [btMarketExpanded, setBtMarketExpanded] = useState(false);
+  const [btSelectedMarkets, setBtSelectedMarkets] = useState([]); // empty = all markets
   // #6 — single market dollar cap
   const [btMarketCap, setBtMarketCap] = useState("");
   const [btMarketCapEnabled, setBtMarketCapEnabled] = useState(false);
@@ -418,6 +421,22 @@ export default function App() {
   const bestHour=useMemo(()=>{let best=null,bestP=-1;for(let h=0;h<24;h++){const{w,l}=stats.byHour[h];if(w+l<3)continue;const p=pctNum(w,l);if(p>bestP){bestP=p;best=h;}}return best;},[stats]);
   const bestBlock=useMemo(()=>{let best=null,bestP=-1;for(let b=0;b<6;b++){const{w,l}=stats.byBlock[b];if(w+l<3)continue;const p=pctNum(w,l);if(p>bestP){bestP=p;best=b;}}return best;},[stats]);
 
+  // ── Market categories derived from trade titles ─────────────────────────────
+  // Strips timestamp suffix: "Bitcoin Up or Down - March 7 11:30AM ET" → "Bitcoin Up or Down"
+  const marketCategories = useMemo(() => {
+    const counts = {};
+    for (const t of trades) {
+      const raw = t.title || "";
+      const dashIdx = raw.lastIndexOf(" - ");
+      const category = dashIdx > 0 ? raw.slice(0, dashIdx).trim() : raw.trim();
+      if (!category) continue;
+      counts[category] = (counts[category] || 0) + 1;
+    }
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, count]) => ({ name, count }));
+  }, [trades]);
+
   // ── PnL Stats ────────────────────────────────────────────────────────────────
   const pnlStats=useMemo(()=>{
     let realized=0;
@@ -475,10 +494,21 @@ export default function App() {
       leaderPortfolioData, btLeaderBalance]);
 
   // ── #2: Filter logic with hourly multi-select ─────────────────────────────
+  // Helper: extract market category from title
+  const getMarketCategory = (title) => {
+    const raw = title || "";
+    const dashIdx = raw.lastIndexOf(" - ");
+    return dashIdx > 0 ? raw.slice(0, dashIdx).trim() : raw.trim();
+  };
+
   const btFilteredTrades=useMemo(()=>{
     let base = trades;
+    // Market filter (applied first, independent of time block)
+    if(btSelectedMarkets.length > 0) {
+      base = base.filter(t => btSelectedMarkets.includes(getMarketCategory(t.title)));
+    }
     if(btMode==="custom") {
-      base = trades.filter(t=>t.dateET>=btDateFrom&&t.dateET<=btDateTo);
+      base = base.filter(t=>t.dateET>=btDateFrom&&t.dateET<=btDateTo);
     }
     if(btMode==="all") return base;
     // Hourly multi-select takes priority
@@ -490,7 +520,7 @@ export default function App() {
     if(blockVal===0) return base.filter(t=>t.hourET>=0&&t.hourET<7);
     if(blockVal===7) return base;
     return base.filter(t=>getBlock4(t.hourET)===blockVal-1);
-  },[trades,btMode,btBlock,btDateFrom,btDateTo,btCustomBlock,btSelectedHours]);
+  },[trades,btMode,btBlock,btDateFrom,btDateTo,btCustomBlock,btSelectedHours,btSelectedMarkets]);
 
   const allBlocksResults=useMemo(()=>{
     if(btMode!=="all") return null;
@@ -958,6 +988,46 @@ export default function App() {
                 {/* ── RIGHT: TIME BLOCK MODE ── */}
                 <div style={S.panel}>
                   <div style={S.secT}>TIME BLOCK MODE</div>
+
+                  {/* ── Market Filter ── */}
+                  <div style={{marginBottom:10}}>
+                    <button onClick={()=>setBtMarketExpanded(x=>!x)}
+                      style={{...S.seg(btSelectedMarkets.length>0),fontSize:11,display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+                      MARKET FILTER {btMarketExpanded?"▲":"▼"}
+                      {btSelectedMarkets.length>0
+                        ? <span style={{color:"#00ff9d",marginLeft:4}}>{btSelectedMarkets.length} selected</span>
+                        : <span style={{color:"#7080a0",marginLeft:4}}>ALL</span>}
+                    </button>
+                    {btMarketExpanded&&(
+                      <div style={{background:"#080818",border:"1px solid #1e2040",borderRadius:2,padding:"8px",maxHeight:220,overflowY:"auto"}}>
+                        {/* ALL toggle */}
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,paddingBottom:6,borderBottom:"1px solid #1e2040"}}>
+                          <span style={{fontSize:11,color:"#7080a0",letterSpacing:1}}>ALL MARKETS ({trades.length} trades)</span>
+                          <button onClick={()=>setBtSelectedMarkets([])}
+                            style={{...S.btn("sec",false),fontSize:10,padding:"2px 8px",opacity:btSelectedMarkets.length===0?1:0.5}}>
+                            ALL
+                          </button>
+                        </div>
+                        {marketCategories.map(({name,count})=>{
+                          const active = btSelectedMarkets.includes(name);
+                          return(
+                            <div key={name}
+                              onClick={()=>setBtSelectedMarkets(prev=>
+                                prev.includes(name) ? prev.filter(x=>x!==name) : [...prev, name]
+                              )}
+                              style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                                padding:"4px 6px",borderRadius:2,cursor:"pointer",marginBottom:2,
+                                background:active?"#001f10":"transparent",
+                                border:`1px solid ${active?"#00ff9d":"transparent"}`}}>
+                              <span style={{fontSize:12,color:active?"#00ff9d":"#c0cce0",flex:1,marginRight:8}}>{name}</span>
+                              <span style={{fontSize:11,color:"#7080a0",whiteSpace:"nowrap"}}>{count}t</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
                   <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
                     {[["block","SPECIFIC"],["all","COMPARE ALL"],["custom","CUSTOM"]].map(([k,l])=>(
                       <button key={k} onClick={()=>{setBtMode(k);setBtSelectedHours([]);}} style={S.seg(btMode===k)}>{l}</button>
