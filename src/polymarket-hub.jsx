@@ -836,171 +836,151 @@ export default function App() {
           ):(
             <div>
 
-              {/* ── COPY TRADE SETTINGS ── */}
-              <div style={S.panel}>
-                <div style={S.secT}>COPY TRADE SETTINGS</div>
-                <div style={{display:"flex",gap:16,flexWrap:"wrap",alignItems:"flex-start"}}>
+              {/* ── 2-COLUMN LAYOUT: LEFT = Settings+Sizing, RIGHT = Time Block ── */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12,alignItems:"start"}}>
 
-                  {/* Starting balance */}
-                  <div style={{display:"flex",flexDirection:"column",gap:3}}>
-                    <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>STARTING BALANCE ($)</label>
-                    <input type="number" value={btStartBal} onChange={e=>setBtStartBal(e.target.value)} style={{...S.inp,width:90}}/>
+                {/* ── LEFT: COPY TRADE SETTINGS + POSITION SIZING ── */}
+                <div style={S.panel}>
+                  <div style={S.secT}>SETTINGS & SIZING</div>
+
+                  {/* Copy Trade Settings row */}
+                  <div style={{display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-start",marginBottom:12,paddingBottom:10,borderBottom:"1px solid #1e2040"}}>
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>START BAL ($)</label>
+                      <input type="number" value={btStartBal} onChange={e=>setBtStartBal(e.target.value)} style={{...S.inp,width:80}}/>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>SLIPPAGE (%)</label>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <input type="number" value={btSlippage} onChange={e=>setBtSlippage(e.target.value)} min="0" max="10" step="0.1" style={{...S.inp,width:55}}/>
+                        <span style={{fontSize:11,color:"#7080a0"}}>%</span>
+                      </div>
+                      {parseFloat(btSlippage)>0&&<div style={{fontSize:10,color:"#f0c040"}}>$0.65→${(0.65*(1+parseFloat(btSlippage)/100)).toFixed(4)}</div>}
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MAX $ / MARKET</label>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <input type="checkbox" checked={btMarketCapEnabled} onChange={e=>setBtMarketCapEnabled(e.target.checked)} style={{accentColor:"#00ff9d"}}/>
+                        <input type="number" value={btMarketCap} onChange={e=>setBtMarketCap(e.target.value)} disabled={!btMarketCapEnabled}
+                          placeholder="e.g. 50" style={{...S.inp,width:65,opacity:btMarketCapEnabled?1:0.4}}/>
+                      </div>
+                      {btMarketCapEnabled&&<div style={{fontSize:10,color:"#b0bcd0"}}>YES+NO share cap</div>}
+                    </div>
                   </div>
 
-                  {/* #7 Slippage */}
-                  <div style={{display:"flex",flexDirection:"column",gap:3}}>
-                    <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>SLIPPAGE (%)</label>
+                  {/* Position Sizing */}
+                  <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
+                    {[["fixed","FIXED $"],["percentage","PCT"],["portfolio","PORTFOLIO"]].map(([k,l])=>(
+                      <button key={k} onClick={()=>setBtSizingMode(k)} style={S.seg(btSizingMode===k)}>{l}</button>
+                    ))}
+                  </div>
+                  {btSizingMode==="fixed"&&(
                     <div style={{display:"flex",alignItems:"center",gap:6}}>
-                      <input type="number" value={btSlippage} onChange={e=>setBtSlippage(e.target.value)} min="0" max="10" step="0.1" style={{...S.inp,width:60}}/>
-                      <span style={{fontSize:12,color:"#7080a0"}}>% entry</span>
+                      <span style={{fontSize:12,color:"#b0bcd0"}}>$</span>
+                      <input type="number" value={btFixedAmt} onChange={e=>setBtFixedAmt(e.target.value)} style={{...S.inp,width:80}}/>
+                      <span style={{fontSize:11,color:"#7080a0"}}>USDC / trade</span>
                     </div>
-                    {parseFloat(btSlippage)>0&&(
-                      <div style={{fontSize:11,color:"#f0c040",marginTop:2}}>
-                        e.g. $0.65 → ${(0.65*(1+parseFloat(btSlippage)/100)).toFixed(4)} effective
+                  )}
+                  {btSizingMode==="percentage"&&(
+                    <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                      <div style={{display:"flex",alignItems:"center",gap:6}}>
+                        <input type="number" value={btPct} onChange={e=>setBtPct(e.target.value)} min="1" max="500" style={{...S.inp,width:65}}/>
+                        <span style={{fontSize:11,color:"#b0bcd0"}}>% of leader's totalBought</span>
                       </div>
-                    )}
-                  </div>
-
-                  {/* #6 Market cap */}
-                  <div style={{display:"flex",flexDirection:"column",gap:3}}>
-                    <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MAX $ PER MARKET</label>
-                    <div style={{display:"flex",alignItems:"center",gap:6}}>
-                      <input type="checkbox" checked={btMarketCapEnabled} onChange={e=>setBtMarketCapEnabled(e.target.checked)} style={{accentColor:"#00ff9d"}}/>
-                      <input type="number" value={btMarketCap} onChange={e=>setBtMarketCap(e.target.value)} disabled={!btMarketCapEnabled}
-                        placeholder="e.g. 50" style={{...S.inp,width:70,opacity:btMarketCapEnabled?1:0.4}}/>
-                      <span style={{fontSize:12,color:"#7080a0"}}>cap</span>
+                      <div style={{fontSize:11,color:"#7080a0"}}>leader 100 USDC → you stake {btPct} USDC</div>
                     </div>
-                    {btMarketCapEnabled&&<div style={{fontSize:11,color:"#b0bcd0",marginTop:2}}>YES+NO sides share cap per market</div>}
-                  </div>
-
-                </div>
-              </div>
-
-              {/* ── POSITION SIZING ── */}
-              <div style={S.panel}>
-                <div style={S.secT}>POSITION SIZING</div>
-                <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
-                  {[["fixed","FIXED $"],["percentage","PERCENTAGE"],["portfolio","PORTFOLIO-WEIGHTED"]].map(([k,l])=>(
-                    <button key={k} onClick={()=>setBtSizingMode(k)} style={S.seg(btSizingMode===k)}>{l}</button>
-                  ))}
-                </div>
-                {btSizingMode==="fixed"&&(
-                  <div style={{display:"flex",alignItems:"center",gap:8}}>
-                    <span style={{fontSize:12,color:"#b0bcd0"}}>$</span>
-                    <input type="number" value={btFixedAmt} onChange={e=>setBtFixedAmt(e.target.value)} style={{...S.inp,width:80}}/>
-                    <span style={{fontSize:12,color:"#b0bcd0"}}>USDC per trade regardless of leader size</span>
-                  </div>
-                )}
-                {btSizingMode==="percentage"&&(
-                  <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                    <div style={{display:"flex",alignItems:"center",gap:8}}>
-                      <input type="number" value={btPct} onChange={e=>setBtPct(e.target.value)} min="1" max="500" style={{...S.inp,width:70}}/>
-                      <span style={{fontSize:12,color:"#b0bcd0"}}>% of leader's totalBought per trade</span>
-                    </div>
-                    <div style={{fontSize:11,color:"#7080a0"}}>e.g. leader buys 100 USDC → you stake {btPct} USDC</div>
-                  </div>
-                )}
-                {btSizingMode==="portfolio"&&(
-                  <div style={{display:"flex",flexDirection:"column",gap:8}}>
-                    <div style={{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"}}>
-                      <div style={{display:"flex",alignItems:"center",gap:8}}>
-                        <span style={{fontSize:12,color:"#b0bcd0"}}>YOUR BALANCE $</span>
-                        <input type="number" value={btPortfolioBalance} onChange={e=>setBtPortfolioBalance(e.target.value)} style={{...S.inp,width:90}}/>
+                  )}
+                  {btSizingMode==="portfolio"&&(
+                    <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                      <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                        <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                          <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MY BALANCE ($)</label>
+                          <input type="number" value={btPortfolioBalance} onChange={e=>setBtPortfolioBalance(e.target.value)} style={{...S.inp,width:80}}/>
+                        </div>
+                        <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                          <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>LEADER BAL ($)</label>
+                          <input type="number" value={btLeaderBalance} onChange={e=>setBtLeaderBalance(e.target.value)} style={{...S.inp,width:80}}/>
+                        </div>
                       </div>
-                      <div style={{display:"flex",alignItems:"center",gap:8}}>
-                        <span style={{fontSize:12,color:"#b0bcd0"}}>LEADER BALANCE $</span>
-                        <input type="number" value={btLeaderBalance} onChange={e=>setBtLeaderBalance(e.target.value)} style={{...S.inp,width:90}}/>
+                      <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                        <span style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MULTIPLIER</span>
+                        <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap"}}>
+                          {[0.25,0.5,1,2,3].map(m=>(
+                            <button key={m} onClick={()=>setBtMultiplier(m)}
+                              style={{...S.seg(parseFloat(btMultiplier)===m),fontSize:11,padding:"3px 8px"}}>
+                              {m}x
+                            </button>
+                          ))}
+                          <input type="number" value={btMultiplier} onChange={e=>setBtMultiplier(e.target.value)}
+                            min="0.01" step="0.01" style={{...S.inp,width:55,marginLeft:2}}/>
+                        </div>
                       </div>
+                      <div style={{fontSize:10,color:"#7080a0"}}>stake = (leader trade / leader portfolio) × my bal × mult</div>
                     </div>
-                    <div style={{display:"flex",flexDirection:"column",gap:5}}>
-                      <span style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MULTIPLIER</span>
-                      <div style={{display:"flex",gap:5,alignItems:"center",flexWrap:"wrap"}}>
-                        {[0.25,0.5,1,2,3].map(m=>(
-                          <button key={m} onClick={()=>setBtMultiplier(m)}
-                            style={{...S.seg(parseFloat(btMultiplier)===m),fontSize:11,padding:"4px 10px"}}>
-                            {m}x
-                          </button>
-                        ))}
-                        <input
-                          type="number" value={btMultiplier}
-                          onChange={e=>setBtMultiplier(e.target.value)}
-                          min="0.01" step="0.01"
-                          style={{...S.inp,width:65,marginLeft:4}}
-                        />
-                      </div>
-                    </div>
-                    <div style={{fontSize:11,color:"#7080a0"}}>Stake = (leader trade / leader portfolio) × your balance × multiplier</div>
-                    <div style={{fontSize:11,color:"#7080a0"}}>Leader portfolio reconstructed trade-by-trade from totalBought − losses</div>
-                  </div>
-                )}
-              </div>
-
-              {/* ── TIME BLOCK MODE ── */}
-              <div style={S.panel}>
-                <div style={S.secT}>TIME BLOCK MODE</div>
-                <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
-                  {[["block","SPECIFIC BLOCK"],["all","COMPARE ALL"],["custom","CUSTOM RANGE"]].map(([k,l])=>(
-                    <button key={k} onClick={()=>{setBtMode(k);setBtSelectedHours([]);}} style={S.seg(btMode===k)}>{l}</button>
-                  ))}
+                  )}
                 </div>
 
-                {(btMode==="block"||btMode==="custom")&&(
-                  <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                {/* ── RIGHT: TIME BLOCK MODE ── */}
+                <div style={S.panel}>
+                  <div style={S.secT}>TIME BLOCK MODE</div>
+                  <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
+                    {[["block","SPECIFIC"],["all","COMPARE ALL"],["custom","CUSTOM"]].map(([k,l])=>(
+                      <button key={k} onClick={()=>{setBtMode(k);setBtSelectedHours([]);}} style={S.seg(btMode===k)}>{l}</button>
+                    ))}
+                  </div>
 
-                    {/* Date range (custom mode only) */}
-                    {btMode==="custom"&&(
-                      <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-                        <input type="date" value={btDateFrom} onChange={e=>setBtDateFrom(e.target.value)} style={{...S.inp,colorScheme:"dark"}}/>
-                        <span style={{fontSize:12,color:"#b0bcd0"}}>to</span>
-                        <input type="date" value={btDateTo} onChange={e=>setBtDateTo(e.target.value)} style={{...S.inp,colorScheme:"dark"}}/>
-                      </div>
-                    )}
-
-                    {/* Block dropdown — hidden when hourly select is active */}
-                    {btSelectedHours.length===0&&(
-                      <select
-                        value={btMode==="block"?btBlock:btCustomBlock}
-                        onChange={e=>{btMode==="block"?setBtBlock(parseInt(e.target.value)):setBtCustomBlock(parseInt(e.target.value));}}
-                        style={{...S.inp,maxWidth:240}}>
-                        <option value={0}>Night (12AM–7AM)</option>
-                        {BLOCK4_LABELS.map((l,b)=><option key={b} value={b+1}>{l}</option>)}
-                        <option value={7}>All hours</option>
-                      </select>
-                    )}
-
-                    {/* #2: Hourly multi-select */}
-                    <div>
-                      <button onClick={()=>setBtHourlyExpanded(x=>!x)} style={{...S.seg(btSelectedHours.length>0),fontSize:11,display:"flex",alignItems:"center",gap:6}}>
-                        HOURLY SELECT {btHourlyExpanded?"▲":"▼"}
-                        {btSelectedHours.length>0&&<span style={{color:"#00ff9d",marginLeft:4}}>{btSelectedHours.length} selected</span>}
-                      </button>
-                      {btHourlyExpanded&&(
-                        <div style={{marginTop:8}}>
-                          <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:8}}>
-                            {HOURS.map(h=>(
-                              <button key={h} onClick={()=>toggleHour(h)} style={S.hourBtn(btSelectedHours.includes(h))}>
-                                {HOUR_LABELS[h]}
-                              </button>
-                            ))}
-                          </div>
-                          <div style={{display:"flex",gap:6}}>
-                            <button onClick={()=>setBtSelectedHours([...HOURS])} style={{...S.btn("sec",false),fontSize:11,padding:"4px 10px"}}>ALL</button>
-                            <button onClick={()=>setBtSelectedHours([])} style={{...S.btn("sec",false),fontSize:11,padding:"4px 10px"}}>NONE</button>
-                            <button onClick={()=>setBtSelectedHours(HOURS.filter(h=>h>=0&&h<7))} style={{...S.btn("sec",false),fontSize:11,padding:"4px 10px"}}>NIGHT</button>
-                            <button onClick={()=>setBtSelectedHours(HOURS.filter(h=>h>=7))} style={{...S.btn("sec",false),fontSize:11,padding:"4px 10px"}}>DAY</button>
-                          </div>
-                          {btSelectedHours.length>0&&(
-                            <div style={{fontSize:11,color:"#00ff9d",marginTop:5}}>
-                              Backtesting hours: {[...btSelectedHours].sort((a,b)=>a-b).map(h=>HOUR_LABELS[h]).join(", ")}
-                            </div>
-                          )}
+                  {(btMode==="block"||btMode==="custom")&&(
+                    <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                      {btMode==="custom"&&(
+                        <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+                          <input type="date" value={btDateFrom} onChange={e=>setBtDateFrom(e.target.value)} style={{...S.inp,colorScheme:"dark"}}/>
+                          <span style={{fontSize:12,color:"#b0bcd0"}}>to</span>
+                          <input type="date" value={btDateTo} onChange={e=>setBtDateTo(e.target.value)} style={{...S.inp,colorScheme:"dark"}}/>
                         </div>
                       )}
+                      {btSelectedHours.length===0&&(
+                        <select
+                          value={btMode==="block"?btBlock:btCustomBlock}
+                          onChange={e=>{btMode==="block"?setBtBlock(parseInt(e.target.value)):setBtCustomBlock(parseInt(e.target.value));}}
+                          style={{...S.inp,maxWidth:220}}>
+                          <option value={0}>Night (12AM–7AM)</option>
+                          {BLOCK4_LABELS.map((l,b)=><option key={b} value={b+1}>{l}</option>)}
+                          <option value={7}>All hours</option>
+                        </select>
+                      )}
+                      <div>
+                        <button onClick={()=>setBtHourlyExpanded(x=>!x)} style={{...S.seg(btSelectedHours.length>0),fontSize:11,display:"flex",alignItems:"center",gap:6}}>
+                          HOURLY SELECT {btHourlyExpanded?"▲":"▼"}
+                          {btSelectedHours.length>0&&<span style={{color:"#00ff9d",marginLeft:4}}>{btSelectedHours.length} selected</span>}
+                        </button>
+                        {btHourlyExpanded&&(
+                          <div style={{marginTop:8}}>
+                            <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:6}}>
+                              {HOURS.map(h=>(
+                                <button key={h} onClick={()=>toggleHour(h)} style={S.hourBtn(btSelectedHours.includes(h))}>
+                                  {HOUR_LABELS[h]}
+                                </button>
+                              ))}
+                            </div>
+                            <div style={{display:"flex",gap:5}}>
+                              <button onClick={()=>setBtSelectedHours([...HOURS])} style={{...S.btn("sec",false),fontSize:11,padding:"3px 8px"}}>ALL</button>
+                              <button onClick={()=>setBtSelectedHours([])} style={{...S.btn("sec",false),fontSize:11,padding:"3px 8px"}}>NONE</button>
+                              <button onClick={()=>setBtSelectedHours(HOURS.filter(h=>h>=0&&h<7))} style={{...S.btn("sec",false),fontSize:11,padding:"3px 8px"}}>NIGHT</button>
+                              <button onClick={()=>setBtSelectedHours(HOURS.filter(h=>h>=7))} style={{...S.btn("sec",false),fontSize:11,padding:"3px 8px"}}>DAY</button>
+                            </div>
+                            {btSelectedHours.length>0&&(
+                              <div style={{fontSize:11,color:"#00ff9d",marginTop:5}}>
+                                {[...btSelectedHours].sort((a,b)=>a-b).map(h=>HOUR_LABELS[h]).join(", ")}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
+                  )}
+                </div>
 
-                  </div>
-                )}
-              </div>
+              </div>{/* end 2-col grid */}
 
               {/* ── COMPARE ALL RESULTS ── */}
               {btMode==="all"&&allBlocksResults&&(
