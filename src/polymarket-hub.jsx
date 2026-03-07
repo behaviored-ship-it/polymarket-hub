@@ -8,6 +8,7 @@ const HOUR_LABELS = Array.from({length:24},(_,i)=>i===0?"12AM":i<12?`${i}AM`:i==
 const TARGET_WALLET = "0x428b3f163E831f4d57D9589Bf6e94c64Ce9C6b7a";
 const STORAGE_KEY = "polymarket-hub-trades";
 const WALLET_KEY  = "polymarket-hub-wallet";
+const PROXY_BASE  = "https://polymarket-hub.vercel.app/api/positions";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function toET(ts) { return new Date(new Date(ts*1000).toLocaleString("en-US",{timeZone:"America/New_York"})); }
@@ -165,7 +166,7 @@ export default function App() {
     try {
       let all=[], offset=0;
       while(true) {
-        const url=`https://data-api.polymarket.com/closed-positions?user=${address.toLowerCase()}&sortBy=TIMESTAMP&sortDirection=ASC&limit=50&offset=${offset}`;
+        const url=`${PROXY_BASE}?wallet=${address.toLowerCase()}&offset=${offset}&type=closed`;
         const res=await fetch(url);
         if(!res.ok) throw new Error(`API ${res.status}`);
         const data=await res.json();
@@ -204,7 +205,7 @@ export default function App() {
     try {
       let all=[], offset=0;
       while(true) {
-        const url=`https://data-api.polymarket.com/closed-positions?user=${address.toLowerCase()}&sortBy=TIMESTAMP&sortDirection=DESC&limit=50&offset=${offset}`;
+        const url=`${PROXY_BASE}?wallet=${address.toLowerCase()}&offset=${offset}&type=closed&sort=DESC`;
         const res=await fetch(url);
         const data=await res.json();
         if(!Array.isArray(data)||data.length===0) break;
@@ -216,7 +217,7 @@ export default function App() {
       }
       setPnlData(all);
       try {
-        const openRes=await fetch(`https://data-api.polymarket.com/positions?user=${address.toLowerCase()}&sizeThreshold=0.01`);
+        const openRes=await fetch(`${PROXY_BASE}?wallet=${address.toLowerCase()}&type=open`);
         const openData=await openRes.json();
         setOpenPos((Array.isArray(openData)?openData:[]).filter(p=>pnlFilter===""||( p.title||"").toLowerCase().includes(pnlFilter.toLowerCase())));
       } catch(_){setOpenPos([]);}
