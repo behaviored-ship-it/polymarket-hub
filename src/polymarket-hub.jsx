@@ -79,14 +79,16 @@ function checkMarketCap(marketKey, currentExposure, stake, config) {
 function runBacktestPure(filteredTrades, config) {
   if (!filteredTrades || filteredTrades.length === 0) return null;
 
-  const { startBal, slippagePct, marketCapEnabled, marketCapAmt } = config;
+  const { startBal, slippagePct, marketCapEnabled, marketCapAmt, dailyLimitEnabled, dailyLimitAmt } = config;
 
   let balance = parseFloat(startBal) || 100;
   const startBalance = balance;
   const equity = [{ i: 0, bal: balance, date: "", hour: null }];
   let wins = 0, losses = 0, peak = balance, maxDD = 0;
   const marketExposure = {};
+  const dailySpend = {};   // keyed by dateET string
   let tradeIndex = 0;
+  const skipped = { marketCap: 0, dailyLimit: 0, insufficientBalance: 0 };
 
   const groups = buildTradeGroups(filteredTrades);
 
@@ -101,13 +103,26 @@ function runBacktestPure(filteredTrades, config) {
       // Market cap check (before sizing)
       const currentExposure = marketExposure[marketKey] || 0;
       if (marketCapEnabled && currentExposure >= marketCapAmt) {
+        skipped.marketCap++;
         equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
         continue;
       }
 
+      // Daily limit check
+      const dateKey = t.dateET || "";
+      if (dailyLimitEnabled) {
+        const spent = dailySpend[dateKey] || 0;
+        if (spent >= dailyLimitAmt) {
+          skipped.dailyLimit++;
+          equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
+          continue;
+        }
+      }
+
       const stake = calcStake(t, concurrentCount, config, balance);
 
-      if (stake <= 0) {
+      if (stake <= 0 || balance <= 0) {
+        skipped.insufficientBalance++;
         equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
         continue;
       }
@@ -115,6 +130,10 @@ function runBacktestPure(filteredTrades, config) {
       // Track market exposure post-sizing
       if (marketCapEnabled) {
         marketExposure[marketKey] = currentExposure + stake;
+      }
+      // Track daily spend
+      if (dailyLimitEnabled) {
+        dailySpend[dateKey] = (dailySpend[dateKey] || 0) + stake;
       }
 
       if (t.result === "win") {
@@ -143,6 +162,7 @@ function runBacktestPure(filteredTrades, config) {
     maxDD,
     equity,
     total: wins + losses,
+    skipped,
   };
 }
 
@@ -240,6 +260,9 @@ export default function App() {
   // #6 — single market dollar cap
   const [btMarketCap, setBtMarketCap] = useState("");
   const [btMarketCapEnabled, setBtMarketCapEnabled] = useState(false);
+  // #8 — daily limit
+  const [btDailyLimit, setBtDailyLimit] = useState("");
+  const [btDailyLimitEnabled, setBtDailyLimitEnabled] = useState(false);
   // #7 — slippage
   const [btSlippage, setBtSlippage] = useState(0);
 
@@ -441,12 +464,15 @@ export default function App() {
       slippagePct: parseFloat(btSlippage) || 0,
       marketCapEnabled: btMarketCapEnabled && parseFloat(btMarketCap) > 0,
       marketCapAmt: parseFloat(btMarketCap) || Infinity,
+      dailyLimitEnabled: btDailyLimitEnabled && parseFloat(btDailyLimit) > 0,
+      dailyLimitAmt: parseFloat(btDailyLimit) || Infinity,
       leaderPortfolioData,
       leaderBalance: btLeaderBalance,
     };
     return runBacktestPure(filteredTrades, config);
   }, [btStartBal, btSizingMode, btFixedAmt, btPct, btPortfolioBalance, btMultiplier, btSlippage,
-      btMarketCapEnabled, btMarketCap, leaderPortfolioData, btLeaderBalance]);
+      btMarketCapEnabled, btMarketCap, btDailyLimitEnabled, btDailyLimit,
+      leaderPortfolioData, btLeaderBalance]);
 
   // ── #2: Filter logic with hourly multi-select ─────────────────────────────
   const btFilteredTrades=useMemo(()=>{
@@ -866,6 +892,15 @@ export default function App() {
                       </div>
                       {btMarketCapEnabled&&<div style={{fontSize:10,color:"#b0bcd0"}}>YES+NO share cap</div>}
                     </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MAX $ / DAY (ET)</label>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <input type="checkbox" checked={btDailyLimitEnabled} onChange={e=>setBtDailyLimitEnabled(e.target.checked)} style={{accentColor:"#00ff9d"}}/>
+                        <input type="number" value={btDailyLimit} onChange={e=>setBtDailyLimit(e.target.value)} disabled={!btDailyLimitEnabled}
+                          placeholder="e.g. 100" style={{...S.inp,width:65,opacity:btDailyLimitEnabled?1:0.4}}/>
+                      </div>
+                      {btDailyLimitEnabled&&<div style={{fontSize:10,color:"#b0bcd0"}}>resets each ET day</div>}
+                    </div>
                   </div>
 
                   {/* Position Sizing */}
@@ -1036,6 +1071,23 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              {/* ── SKIP WARNING BANNER ── */}
+              {btMode!=="all"&&btResult&&(()=>{
+                const s = btResult.skipped;
+                const total = s.marketCap + s.dailyLimit + s.insufficientBalance;
+                if(total===0) return null;
+                const parts = [
+                  s.marketCap>0 && `${s.marketCap} market cap`,
+                  s.dailyLimit>0 && `${s.dailyLimit} daily limit`,
+                  s.insufficientBalance>0 && `${s.insufficientBalance} insufficient balance`,
+                ].filter(Boolean).join(" · ");
+                return(
+                  <div style={{background:"#1a1000",border:"1px solid #f0c040",padding:"7px 14px",fontSize:12,color:"#f0c040",letterSpacing:1,marginBottom:12,borderRadius:2}}>
+                    ⚠ {total} trade{total!==1?"s":""} skipped — {parts}
+                  </div>
+                );
+              })()}
 
               {btMode!=="all"&&btFilteredTrades.length===0&&(
                 <div style={{textAlign:"center",padding:"30px 0",color:"#505880",fontSize:13,letterSpacing:2}}>NO TRADES MATCH SELECTED BLOCK / DATE RANGE</div>
