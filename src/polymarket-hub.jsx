@@ -43,7 +43,7 @@ function applySlippage(avgPrice, slippagePct) {
 }
 
 function calcStake(trade, concurrentCount, config, currentBalance) {
-  const { sizingMode, fixedAmt, pct, portfolioBalance, leaderPortfolioValues, multiplier } = config;
+  const { sizingMode, fixedAmt, pct, portfolioBalance, leaderPortfolioData, leaderBalance, multiplier } = config;
   let stake = 0;
 
   if (sizingMode === "fixed") {
@@ -53,8 +53,13 @@ function calcStake(trade, concurrentCount, config, currentBalance) {
     stake = leaderBought * (parseFloat(pct) || 50) / 100;
     if (stake <= 0) stake = 5;
   } else if (sizingMode === "portfolio") {
-    const leaderPortfolio = (leaderPortfolioValues && leaderPortfolioValues.get(trade.id)) || 1;
-    const fraction = (trade.totalBought || 0) / leaderPortfolio;
+    const rawPortfolio = (leaderPortfolioData && leaderPortfolioData.map.get(trade.id)) || 1;
+    const finalPortfolio = (leaderPortfolioData && leaderPortfolioData.finalValue) || rawPortfolio;
+    const actualLeaderBalance = parseFloat(leaderBalance) || finalPortfolio;
+    // Normalize reconstructed portfolio to leader's real balance
+    const scaleFactor = actualLeaderBalance / finalPortfolio;
+    const scaledPortfolio = rawPortfolio * scaleFactor;
+    const fraction = (trade.totalBought || 0) / scaledPortfolio;
     stake = fraction * (parseFloat(portfolioBalance) || currentBalance) * (multiplier || 1);
     if (stake <= 0) stake = 5;
   }
@@ -222,6 +227,7 @@ export default function App() {
   const [btFixedAmt, setBtFixedAmt] = useState(10);
   const [btPct, setBtPct] = useState(50);
   const [btPortfolioBalance, setBtPortfolioBalance] = useState(100);
+  const [btLeaderBalance, setBtLeaderBalance] = useState(1000);
   const [btMultiplier, setBtMultiplier] = useState(1);
   const [btMode, setBtMode] = useState("block");
   const [btBlock, setBtBlock] = useState(0);
@@ -407,16 +413,20 @@ export default function App() {
   },[pnlData,openPos]);
 
   // ── Leader portfolio reconstruction (for portfolio-weighted sizing) ──────────
-  const leaderPortfolioValues = useMemo(() => {
+  // map: reconstructed portfolio value at each trade's timestamp
+  // finalValue: last reconstructed value — used to normalize against leader's real balance
+  const leaderPortfolioData = useMemo(() => {
     const sorted = [...trades].sort((a,b) => (a.timestamp||0)-(b.timestamp||0));
     let cumulativeBought = 0;
     const map = new Map();
+    let finalValue = 1;
     for (const t of sorted) {
       cumulativeBought += (t.totalBought || 0);
       const portfolioVal = Math.max(cumulativeBought - (t.realizedPnl < 0 ? Math.abs(t.realizedPnl) : 0), 1);
       map.set(t.id, portfolioVal);
+      finalValue = portfolioVal;
     }
-    return map;
+    return { map, finalValue };
   }, [trades]);
 
   // ── Backtest runner (builds config, calls pure engine) ────────────────────
@@ -431,11 +441,12 @@ export default function App() {
       slippagePct: parseFloat(btSlippage) || 0,
       marketCapEnabled: btMarketCapEnabled && parseFloat(btMarketCap) > 0,
       marketCapAmt: parseFloat(btMarketCap) || Infinity,
-      leaderPortfolioValues,
+      leaderPortfolioData,
+      leaderBalance: btLeaderBalance,
     };
     return runBacktestPure(filteredTrades, config);
   }, [btStartBal, btSizingMode, btFixedAmt, btPct, btPortfolioBalance, btMultiplier, btSlippage,
-      btMarketCapEnabled, btMarketCap, leaderPortfolioValues]);
+      btMarketCapEnabled, btMarketCap, leaderPortfolioData, btLeaderBalance]);
 
   // ── #2: Filter logic with hourly multi-select ─────────────────────────────
   const btFilteredTrades=useMemo(()=>{
@@ -891,9 +902,15 @@ export default function App() {
                 )}
                 {btSizingMode==="portfolio"&&(
                   <div style={{display:"flex",flexDirection:"column",gap:8}}>
-                    <div style={{display:"flex",alignItems:"center",gap:8}}>
-                      <span style={{fontSize:12,color:"#b0bcd0"}}>YOUR BALANCE $</span>
-                      <input type="number" value={btPortfolioBalance} onChange={e=>setBtPortfolioBalance(e.target.value)} style={{...S.inp,width:90}}/>
+                    <div style={{display:"flex",alignItems:"center",gap:16,flexWrap:"wrap"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <span style={{fontSize:12,color:"#b0bcd0"}}>YOUR BALANCE $</span>
+                        <input type="number" value={btPortfolioBalance} onChange={e=>setBtPortfolioBalance(e.target.value)} style={{...S.inp,width:90}}/>
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <span style={{fontSize:12,color:"#b0bcd0"}}>LEADER BALANCE $</span>
+                        <input type="number" value={btLeaderBalance} onChange={e=>setBtLeaderBalance(e.target.value)} style={{...S.inp,width:90}}/>
+                      </div>
                     </div>
                     <div style={{display:"flex",flexDirection:"column",gap:5}}>
                       <span style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MULTIPLIER</span>
@@ -933,9 +950,9 @@ export default function App() {
                     {/* Date range (custom mode only) */}
                     {btMode==="custom"&&(
                       <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-                        <input type="date" value={btDateFrom} onChange={e=>setBtDateFrom(e.target.value)} style={S.inp}/>
+                        <input type="date" value={btDateFrom} onChange={e=>setBtDateFrom(e.target.value)} style={{...S.inp,colorScheme:"dark"}}/>
                         <span style={{fontSize:12,color:"#b0bcd0"}}>to</span>
-                        <input type="date" value={btDateTo} onChange={e=>setBtDateTo(e.target.value)} style={S.inp}/>
+                        <input type="date" value={btDateTo} onChange={e=>setBtDateTo(e.target.value)} style={{...S.inp,colorScheme:"dark"}}/>
                       </div>
                     )}
 
