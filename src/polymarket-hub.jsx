@@ -1164,6 +1164,11 @@ export default function App() {
                               color: nextColor,
                               equity: normalizeEquity(btResult.equity),
                               roi: btResult.roi,
+                              wins: btResult.wins,
+                              losses: btResult.losses,
+                              maxDD: btResult.maxDD,
+                              startBal: btResult.startBal,
+                              endBal: btResult.endBal,
                             }])} style={{...S.btn("sec",false),fontSize:10,padding:"3px 10px",borderColor:nextColor,color:nextColor}}>
                               + ADD TO OVERLAY
                             </button>
@@ -1230,26 +1235,86 @@ export default function App() {
                             </LineChart>
                           </ResponsiveContainer>
 
-                          {/* Legend */}
-                          {savedCurves.length>0&&(
-                            <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:8,paddingTop:8,borderTop:"1px solid #1e2040"}}>
-                              {/* Current curve entry */}
-                              <div style={{display:"flex",alignItems:"center",gap:5,fontSize:11}}>
-                                <div style={{width:16,height:2,background:"#ffffff",borderRadius:1}}/>
-                                <span style={{color:"#ffffff"}}>CURRENT</span>
-                                <span style={{color:btResult.roi>=0?"#00ff9d":"#ff4d6d"}}>{btResult.roi>=0?"+":""}{btResult.roi.toFixed(1)}%</span>
-                              </div>
-                              {savedCurves.map((curve,i)=>(
-                                <div key={i} style={{display:"flex",alignItems:"center",gap:5,fontSize:11}}>
-                                  <div style={{width:16,height:2,background:curve.color,borderRadius:1}}/>
-                                  <span style={{color:"#c0cce0",maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{curve.label}</span>
-                                  <span style={{color:curve.roi>=0?"#00ff9d":"#ff4d6d"}}>{curve.roi>=0?"+":""}{curve.roi.toFixed(1)}%</span>
-                                  <button onClick={()=>setSavedCurves(prev=>prev.filter((_,j)=>j!==i))}
-                                    style={{background:"none",border:"none",color:"#505880",cursor:"pointer",fontSize:11,padding:0}}>✕</button>
+                          {/* Legend + Comparison Table */}
+                          {savedCurves.length>0&&(()=>{
+                            // Build rows: current + all saved curves
+                            const allCurves = [
+                              { label:"CURRENT", color:"#ffffff", roi:btResult.roi, wins:btResult.wins,
+                                losses:btResult.losses, maxDD:btResult.maxDD, isCurrent:true },
+                              ...savedCurves.map(c=>({...c, isCurrent:false}))
+                            ];
+                            // Find best value in each column (for highlighting)
+                            const bestROI   = Math.max(...allCurves.map(c=>c.roi));
+                            const bestWR    = Math.max(...allCurves.map(c=>c.wins+c.losses>0?c.wins/(c.wins+c.losses):0));
+                            const bestDD    = Math.min(...allCurves.map(c=>c.maxDD));
+                            const bestRisk  = Math.max(...allCurves.map(c=>c.maxDD>0?c.roi/c.maxDD:-Infinity));
+                            const colW = {label:"auto", roi:64, wr:58, dd:58, risk:64};
+                            return(
+                              <div style={{marginTop:10,paddingTop:8,borderTop:"1px solid #1e2040"}}>
+                                {/* Legend row */}
+                                <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:10}}>
+                                  {allCurves.map((curve,i)=>(
+                                    <div key={i} style={{display:"flex",alignItems:"center",gap:5,fontSize:11}}>
+                                      <div style={{width:16,height:2,background:curve.color,borderRadius:1}}/>
+                                      <span style={{color:curve.color==="ffffff"?"#ffffff":"#c0cce0",maxWidth:140,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{curve.label}</span>
+                                      {!curve.isCurrent&&<button onClick={()=>setSavedCurves(prev=>prev.filter((_,j)=>j!==i-1))}
+                                        style={{background:"none",border:"none",color:"#505880",cursor:"pointer",fontSize:11,padding:0}}>✕</button>}
+                                    </div>
+                                  ))}
                                 </div>
-                              ))}
-                            </div>
-                          )}
+                                {/* Comparison table */}
+                                <div style={{overflowX:"auto"}}>
+                                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,fontFamily:"'JetBrains Mono',monospace"}}>
+                                    <thead>
+                                      <tr style={{borderBottom:"1px solid #1e2040"}}>
+                                        <th style={{textAlign:"left",padding:"4px 8px",fontSize:10,letterSpacing:2,color:"#7080a0",fontWeight:"normal"}}>CURVE</th>
+                                        <th style={{textAlign:"right",padding:"4px 8px",fontSize:10,letterSpacing:2,color:"#7080a0",fontWeight:"normal"}}>ROI</th>
+                                        <th style={{textAlign:"right",padding:"4px 8px",fontSize:10,letterSpacing:2,color:"#7080a0",fontWeight:"normal"}}>WIN%</th>
+                                        <th style={{textAlign:"right",padding:"4px 8px",fontSize:10,letterSpacing:2,color:"#7080a0",fontWeight:"normal"}}>MAX DD</th>
+                                        <th style={{textAlign:"right",padding:"4px 8px",fontSize:10,letterSpacing:2,color:"#7080a0",fontWeight:"normal",whiteSpace:"nowrap"}}>RISK SCORE</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {allCurves.map((curve,i)=>{
+                                        const wr = curve.wins+curve.losses>0 ? curve.wins/(curve.wins+curve.losses)*100 : 0;
+                                        const riskScore = curve.maxDD>0 ? curve.roi/curve.maxDD : 0;
+                                        const isBestROI   = Math.abs(curve.roi - bestROI) < 0.001;
+                                        const isBestWR    = Math.abs(wr/100 - bestWR) < 0.001;
+                                        const isBestDD    = Math.abs(curve.maxDD - bestDD) < 0.001;
+                                        const isBestRisk  = Math.abs(riskScore - bestRisk) < 0.001;
+                                        const rowBg = i%2===0?"#0a0a1a":"#0d0d1f";
+                                        return(
+                                          <tr key={i} style={{background:rowBg,borderBottom:"1px solid #131330"}}>
+                                            <td style={{padding:"5px 8px"}}>
+                                              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                                                <div style={{width:10,height:10,borderRadius:"50%",background:curve.color,flexShrink:0}}/>
+                                                <span style={{color:"#c0cce0",maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{curve.label}</span>
+                                              </div>
+                                            </td>
+                                            <td style={{textAlign:"right",padding:"5px 8px",color:isBestROI?"#00ff9d":curve.roi>=0?"#a0c8a0":"#ff4d6d",fontWeight:isBestROI?"bold":"normal"}}>
+                                              {curve.roi>=0?"+":""}{curve.roi.toFixed(1)}%{isBestROI?" ★":""}
+                                            </td>
+                                            <td style={{textAlign:"right",padding:"5px 8px",color:isBestWR?"#00ff9d":wr>=50?"#a0c8a0":"#ff4d6d",fontWeight:isBestWR?"bold":"normal"}}>
+                                              {wr.toFixed(1)}%{isBestWR?" ★":""}
+                                            </td>
+                                            <td style={{textAlign:"right",padding:"5px 8px",color:isBestDD?"#00ff9d":curve.maxDD<20?"#a0c8a0":"#ff4d6d",fontWeight:isBestDD?"bold":"normal"}}>
+                                              {curve.maxDD.toFixed(1)}%{isBestDD?" ★":""}
+                                            </td>
+                                            <td style={{textAlign:"right",padding:"5px 8px",color:isBestRisk?"#00ff9d":riskScore>0?"#a0c8a0":"#ff4d6d",fontWeight:isBestRisk?"bold":"normal"}}>
+                                              {riskScore.toFixed(2)}{isBestRisk?" ★":""}
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                  <div style={{fontSize:10,color:"#505878",marginTop:5,letterSpacing:1}}>
+                                    RISK SCORE = ROI ÷ MAX DRAWDOWN · ★ = best in column
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })()}
                         </div>
                       );
                     })():<div style={{color:"#505880",fontSize:14,padding:"20px 0",textAlign:"center"}}>Not enough data</div>}
