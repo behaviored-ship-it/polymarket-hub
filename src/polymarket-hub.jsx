@@ -286,7 +286,7 @@ export default function App() {
       let stake=0;
       if(btSizingMode==="fixed") stake=parseFloat(btFixedAmt)||10;
       else if(btSizingMode==="pct") stake=balance*(parseFloat(btPct)||2)/100;
-      else stake=t.size>0?t.size*avgPrice:(parseFloat(btFixedAmt)||10);
+      else stake=t.size>0?t.size*avgPrice:5; // wallet mode: fallback $5 when size=0.0000
       stake=Math.min(stake,balance);
       if(t.result==="win") { balance+=stake*(1-avgPrice)/avgPrice; wins++; }
       else { balance-=stake; losses++; }
@@ -540,7 +540,7 @@ export default function App() {
                     <div style={{display:"flex",gap:4}}>{[["fixed","FIXED $"],["pct","% BAL"],["wallet","WALLET"]].map(([k,l])=><button key={k} onClick={()=>setBtSizingMode(k)} style={S.seg(btSizingMode===k)}>{l}</button>)}</div>
                     {btSizingMode==="fixed"&&<div style={{display:"flex",alignItems:"center",gap:6,marginTop:4}}><span style={{fontSize:12,color:"#b0bcd0"}}>$</span><input type="number" value={btFixedAmt} onChange={e=>setBtFixedAmt(e.target.value)} style={{...S.inp,width:70}}/><span style={{fontSize:12,color:"#b0bcd0"}}>per trade</span></div>}
                     {btSizingMode==="pct"&&<div style={{display:"flex",alignItems:"center",gap:6,marginTop:4}}><input type="number" value={btPct} onChange={e=>setBtPct(e.target.value)} style={{...S.inp,width:55}}/><span style={{fontSize:12,color:"#b0bcd0"}}>% of balance per trade</span></div>}
-                    {btSizingMode==="wallet"&&<div style={{fontSize:12,color:"#b0bcd0",marginTop:4}}>Uses wallet's actual contract sizes</div>}
+                    {btSizingMode==="wallet"&&(()=>{const zeroCount=trades.filter(t=>t.size===0).length;return(<div style={{marginTop:4}}><div style={{fontSize:12,color:"#b0bcd0"}}>Uses wallet's actual contract sizes (size × avgPrice)</div>{zeroCount>0&&<div style={{fontSize:11,color:"#f0c040",marginTop:3}}>⚠ {zeroCount} trades have size=0.0000 — falling back to $5 stake for those</div>}</div>);})()}
                   </div>
                   <div style={{display:"flex",flexDirection:"column",gap:3,flex:1}}>
                     <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>TIME BLOCK MODE</label>
