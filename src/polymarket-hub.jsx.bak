@@ -5,8 +5,6 @@ import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceL
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 const BLOCK4_LABELS = ["12AM–4AM","4AM–8AM","8AM–12PM","12PM–4PM","4PM–8PM","8PM–12AM"];
 const HOUR_LABELS = Array.from({length:24},(_,i)=>i===0?"12AM":i<12?`${i}AM`:i===12?"12PM":`${i-12}PM`);
-const OVERLAY_COLORS = ["#00ff9d","#f0c040","#ff4d6d","#00aaff","#ff9d00","#cc44ff","#00ffff","#ff44aa"];
-
 const TARGET_WALLET = "0x428b3f163E831f4d57D9589Bf6e94c64Ce9C6b7a";
 const STORAGE_KEY = "polymarket-hub-trades";
 const WALLET_KEY = "polymarket-hub-wallet";
@@ -21,160 +19,6 @@ function pctNum(w,l) { const p=pct(w,l); return p===null?null:parseFloat(p); }
 function wrColor(n) { if(n===null)return"#505878"; return n>=60?"#00ff9d":n>=50?"#f0c040":"#ff4d6d"; }
 function getBlock4(h) { return Math.floor(h/4); }
 function fmtMoney(n) { return (n>=0?"+":"")+`$${Math.abs(n).toFixed(2)}`; }
-
-// ─── Normalise equity to 0-100 trade-progress X axis ────────────────────────
-function normalizeEquity(equity) {
-  if (!equity || equity.length < 2) return [];
-  const last = equity.length - 1;
-  return equity.map((pt, i) => ({
-    x: parseFloat(((i / last) * 100).toFixed(2)),
-    bal: pt.bal,
-    date: pt.date,
-    hour: pt.hour,
-    i: pt.i,
-  }));
-}
-
-// ─── Backtest Engine (pure functions) ────────────────────────────────────────
-
-function buildTradeGroups(trades) {
-  const sorted = [...trades].sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
-  const groups = [];
-  let i = 0;
-  while (i < sorted.length) {
-    const ts = sorted[i].timestamp || 0;
-    const group = [];
-    while (i < sorted.length && (sorted[i].timestamp || 0) === ts) {
-      group.push(sorted[i]);
-      i++;
-    }
-    groups.push(group);
-  }
-  return groups;
-}
-
-function applySlippage(avgPrice, slippagePct) {
-  return Math.min(avgPrice + avgPrice * (slippagePct / 100), 0.9999);
-}
-
-function calcStake(trade, concurrentCount, config, currentBalance) {
-  const { sizingMode, fixedAmt, pct, portfolioBalance, leaderPortfolioData, leaderBalance, multiplier } = config;
-  let stake = 0;
-
-  if (sizingMode === "fixed") {
-    stake = parseFloat(fixedAmt) || 10;
-  } else if (sizingMode === "percentage") {
-    const leaderBought = trade.totalBought || 0;
-    stake = leaderBought * (parseFloat(pct) || 50) / 100;
-    if (stake <= 0) stake = 5;
-  } else if (sizingMode === "portfolio") {
-    const rawPortfolio = (leaderPortfolioData && leaderPortfolioData.map.get(trade.id)) || 1;
-    const finalPortfolio = (leaderPortfolioData && leaderPortfolioData.finalValue) || rawPortfolio;
-    const actualLeaderBalance = parseFloat(leaderBalance) || finalPortfolio;
-    const scaleFactor = actualLeaderBalance / finalPortfolio;
-    const scaledPortfolio = rawPortfolio * scaleFactor;
-    const fraction = (trade.totalBought || 0) / scaledPortfolio;
-    stake = fraction * (parseFloat(portfolioBalance) || currentBalance) * (multiplier || 1);
-    if (stake <= 0) stake = 5;
-  }
-
-  stake = stake / concurrentCount;
-  stake = Math.min(stake, currentBalance);
-  return stake;
-}
-
-function checkMarketCap(marketKey, currentExposure, stake, config) {
-  const { marketCapEnabled, marketCapAmt } = config;
-  if (!marketCapEnabled) return { skip: false, updatedExposure: currentExposure + stake };
-  if (currentExposure >= marketCapAmt) return { skip: true, updatedExposure: currentExposure };
-  return { skip: false, updatedExposure: currentExposure + stake };
-}
-
-function runBacktestPure(filteredTrades, config) {
-  if (!filteredTrades || filteredTrades.length === 0) return null;
-
-  const { startBal, slippagePct, marketCapEnabled, marketCapAmt, dailyLimitEnabled, dailyLimitAmt } = config;
-
-  let balance = parseFloat(startBal) || 100;
-  const startBalance = balance;
-  const equity = [{ i: 0, bal: balance, date: "", hour: null }];
-  let wins = 0, losses = 0, peak = balance, maxDD = 0;
-  const marketExposure = {};
-  const dailySpend = {};
-  let tradeIndex = 0;
-  const skipped = { marketCap: 0, dailyLimit: 0, insufficientBalance: 0 };
-
-  const groups = buildTradeGroups(filteredTrades);
-
-  for (const group of groups) {
-    const concurrentCount = group.length;
-    for (const t of group) {
-      tradeIndex++;
-      const marketKey = (t.title || "unknown").toLowerCase();
-      const avgPrice = t.avgPrice > 0 && t.avgPrice < 1 ? t.avgPrice : 0.5;
-      const effectivePrice = applySlippage(avgPrice, slippagePct);
-
-      const currentExposure = marketExposure[marketKey] || 0;
-      if (marketCapEnabled && currentExposure >= marketCapAmt) {
-        skipped.marketCap++;
-        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
-        continue;
-      }
-
-      const dateKey = t.dateET || "";
-      if (dailyLimitEnabled) {
-        const spent = dailySpend[dateKey] || 0;
-        if (spent >= dailyLimitAmt) {
-          skipped.dailyLimit++;
-          equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
-          continue;
-        }
-      }
-
-      const stake = calcStake(t, concurrentCount, config, balance);
-
-      if (stake <= 0 || balance <= 0) {
-        skipped.insufficientBalance++;
-        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
-        continue;
-      }
-
-      if (marketCapEnabled) {
-        marketExposure[marketKey] = currentExposure + stake;
-      }
-      if (dailyLimitEnabled) {
-        dailySpend[dateKey] = (dailySpend[dateKey] || 0) + stake;
-      }
-
-      if (t.result === "win") {
-        balance += stake * (1 - effectivePrice) / effectivePrice;
-        wins++;
-      } else {
-        balance -= stake;
-        losses++;
-      }
-
-      balance = Math.max(0, balance);
-      if (balance > peak) peak = balance;
-      const dd = ((peak - balance) / peak) * 100;
-      if (dd > maxDD) maxDD = dd;
-
-      equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
-    }
-  }
-
-  return {
-    startBal: startBalance,
-    endBal: balance,
-    roi: ((balance - startBalance) / startBalance) * 100,
-    wins,
-    losses,
-    maxDD,
-    equity,
-    total: wins + losses,
-    skipped,
-  };
-}
 
 // ─── Persistent Storage Helpers ──────────────────────────────────────────────
 async function storageSave(key, value) {
@@ -252,29 +96,24 @@ export default function App() {
 
   // ── Backtest state ──────────────────────────────────────────────────────────
   const [btStartBal, setBtStartBal] = useState(100);
+  // Sizing modes: fixed | percentage | portfolio
   const [btSizingMode, setBtSizingMode] = useState("fixed");
   const [btFixedAmt, setBtFixedAmt] = useState(10);
   const [btPct, setBtPct] = useState(50);
   const [btPortfolioBalance, setBtPortfolioBalance] = useState(100);
-  const [btLeaderBalance, setBtLeaderBalance] = useState(1000);
-  const [btMultiplier, setBtMultiplier] = useState(1);
   const [btMode, setBtMode] = useState("block");
   const [btBlock, setBtBlock] = useState(0);
   const [btDateFrom, setBtDateFrom] = useState("2026-02-19");
   const [btDateTo, setBtDateTo] = useState("2026-03-06");
   const [btCustomBlock, setBtCustomBlock] = useState(0);
+  // #2 — hourly multi-select
   const [btHourlyExpanded, setBtHourlyExpanded] = useState(false);
   const [btSelectedHours, setBtSelectedHours] = useState([]);
-  const [btMarketExpanded, setBtMarketExpanded] = useState(false);
-  const [btSelectedMarkets, setBtSelectedMarkets] = useState([]);
+  // #6 — single market dollar cap
   const [btMarketCap, setBtMarketCap] = useState("");
   const [btMarketCapEnabled, setBtMarketCapEnabled] = useState(false);
-  const [btDailyLimit, setBtDailyLimit] = useState("");
-  const [btDailyLimitEnabled, setBtDailyLimitEnabled] = useState(false);
+  // #7 — slippage
   const [btSlippage, setBtSlippage] = useState(0);
-  const [savedCurves, setSavedCurves] = useState([]);
-  const [pendingCurve, setPendingCurve] = useState(null);
-  const [pendingName, setPendingName] = useState("");
 
   // ── Auto-load on mount ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -356,47 +195,10 @@ export default function App() {
           title:t.title||""
         });
       }
-
-      // ── Fetch open positions and inject expired ones as synthetic closed trades ──
-      let expiredCount = 0;
-      try {
-        const openUrl = `${PROXY_BASE}?wallet=${address.toLowerCase()}&type=open`;
-        const openRes = await fetch(openUrl);
-        const openData = await openRes.json();
-        if (Array.isArray(openData)) {
-          for (const op of openData) {
-            const cur = parseFloat(op.curPrice || 0);
-            // Expired/resolved: price converged to near 0 (NO won) or near 1 (YES won)
-            const isExpiredWin  = cur >= 0.99;
-            const isExpiredLoss = cur <= 0.01;
-            // Ambiguous mid-price on what appears stale — conservative = loss
-            const isAmbiguous   = !isExpiredWin && !isExpiredLoss && cur > 0;
-            if (isExpiredWin || isExpiredLoss || isAmbiguous) {
-              const result = isExpiredWin ? "win" : "loss";
-              classified.push({
-                id: crypto.randomUUID(),
-                dateET: tsToETDate(op.timestamp || Math.floor(Date.now()/1000)),
-                hourET: tsToETHour(op.timestamp || Math.floor(Date.now()/1000)),
-                result,
-                avgPrice: parseFloat(op.avgPrice || 0.5),
-                size: parseFloat(op.size || 0),
-                realizedPnl: 0,
-                totalBought: parseFloat(op.totalBought || 0),
-                timestamp: op.timestamp || Math.floor(Date.now()/1000),
-                title: op.title || "",
-                expired: true,
-              });
-              expiredCount++;
-            }
-          }
-        }
-      } catch(_) {}
-
       setTrades(classified);
       setWalletLabel(address.slice(0,6)+"…"+address.slice(-4));
       setFetchStatus("success");
-      const expiredNote = expiredCount > 0 ? ` · ⚠ ${expiredCount} expired positions included as losses` : "";
-      setFetchMsg(`Loaded ${classified.length - expiredCount} trades (${skipped} zero-PnL skipped)${expiredNote} — auto-saving...`);
+      setFetchMsg(`Loaded ${classified.length} trades (${skipped} zero-PnL skipped) — auto-saving...`);
     } catch(err) {
       if(err.message.includes("fetch")||err.message.includes("CORS")||err.message.includes("NetworkError")) {
         setFetchStatus("cors"); setFetchMsg("CORS blocked — use Bulk Import in LOG tab");
@@ -465,24 +267,6 @@ export default function App() {
   const bestHour=useMemo(()=>{let best=null,bestP=-1;for(let h=0;h<24;h++){const{w,l}=stats.byHour[h];if(w+l<3)continue;const p=pctNum(w,l);if(p>bestP){bestP=p;best=h;}}return best;},[stats]);
   const bestBlock=useMemo(()=>{let best=null,bestP=-1;for(let b=0;b<6;b++){const{w,l}=stats.byBlock[b];if(w+l<3)continue;const p=pctNum(w,l);if(p>bestP){bestP=p;best=b;}}return best;},[stats]);
 
-  // ── Expired trade count (for warning banners) ──────────────────────────────
-  const expiredTradeCount = useMemo(()=>trades.filter(t=>t.expired).length,[trades]);
-
-  // ── Market categories derived from trade titles ─────────────────────────────
-  const marketCategories = useMemo(() => {
-    const counts = {};
-    for (const t of trades) {
-      const raw = t.title || "";
-      const dashIdx = raw.lastIndexOf(" - ");
-      const category = dashIdx > 0 ? raw.slice(0, dashIdx).trim() : raw.trim();
-      if (!category) continue;
-      counts[category] = (counts[category] || 0) + 1;
-    }
-    return Object.entries(counts)
-      .sort((a, b) => b[1] - a[1])
-      .map(([name, count]) => ({ name, count }));
-  }, [trades]);
-
   // ── PnL Stats ────────────────────────────────────────────────────────────────
   const pnlStats=useMemo(()=>{
     let realized=0;
@@ -500,67 +284,128 @@ export default function App() {
     return{realized,unrealized,total:realized+unrealized,byBlock,night,day};
   },[pnlData,openPos]);
 
-  // ── Leader portfolio reconstruction ──────────────────────────────────────────
-  const leaderPortfolioData = useMemo(() => {
+  // ── Leader portfolio reconstruction (for portfolio-weighted sizing) ──────────
+  const leaderPortfolioValues = useMemo(() => {
     const sorted = [...trades].sort((a,b) => (a.timestamp||0)-(b.timestamp||0));
     let cumulativeBought = 0;
     const map = new Map();
-    let finalValue = 1;
     for (const t of sorted) {
       cumulativeBought += (t.totalBought || 0);
       const portfolioVal = Math.max(cumulativeBought - (t.realizedPnl < 0 ? Math.abs(t.realizedPnl) : 0), 1);
       map.set(t.id, portfolioVal);
-      finalValue = portfolioVal;
     }
-    return { map, finalValue };
+    return map;
   }, [trades]);
 
-  // ── Backtest runner ───────────────────────────────────────────────────────
+  // ── Backtest Engine ───────────────────────────────────────────────────────────
   const runBacktest = useCallback((filteredTrades) => {
-    const config = {
-      startBal: btStartBal,
-      sizingMode: btSizingMode,
-      fixedAmt: btFixedAmt,
-      pct: btPct,
-      portfolioBalance: btPortfolioBalance,
-      multiplier: parseFloat(btMultiplier) || 1,
-      slippagePct: parseFloat(btSlippage) || 0,
-      marketCapEnabled: btMarketCapEnabled && parseFloat(btMarketCap) > 0,
-      marketCapAmt: parseFloat(btMarketCap) || Infinity,
-      dailyLimitEnabled: btDailyLimitEnabled && parseFloat(btDailyLimit) > 0,
-      dailyLimitAmt: parseFloat(btDailyLimit) || Infinity,
-      leaderPortfolioData,
-      leaderBalance: btLeaderBalance,
-    };
-    return runBacktestPure(filteredTrades, config);
-  }, [btStartBal, btSizingMode, btFixedAmt, btPct, btPortfolioBalance, btMultiplier, btSlippage,
-      btMarketCapEnabled, btMarketCap, btDailyLimitEnabled, btDailyLimit,
-      leaderPortfolioData, btLeaderBalance]);
+    if(filteredTrades.length===0) return null;
+    // Sort by timestamp for concurrent detection
+    const sorted = [...filteredTrades].sort((a,b)=>(a.timestamp||0)-(b.timestamp||0));
+    let balance=parseFloat(btStartBal)||100;
+    const startBal=balance;
+    const equity=[{i:0,bal:balance,date:"",hour:null}];
+    let wins=0,losses=0,peak=balance,maxDD=0;
+    const slippagePct = parseFloat(btSlippage)||0;
+    const marketCapEnabled = btMarketCapEnabled && parseFloat(btMarketCap)>0;
+    const marketCapAmt = marketCapEnabled ? parseFloat(btMarketCap) : Infinity;
 
-  // ── Filter logic with hourly multi-select ────────────────────────────────
-  const getMarketCategory = (title) => {
-    const raw = title || "";
-    const dashIdx = raw.lastIndexOf(" - ");
-    return dashIdx > 0 ? raw.slice(0, dashIdx).trim() : raw.trim();
-  };
+    // #4: Group trades by timestamp for concurrent modeling
+    const groups = [];
+    let i = 0;
+    while(i < sorted.length) {
+      const ts = sorted[i].timestamp||0;
+      const group = [];
+      while(i < sorted.length && (sorted[i].timestamp||0) === ts) { group.push(sorted[i]); i++; }
+      groups.push(group);
+    }
 
+    // Track per-market exposure for cap (#6)
+    const marketExposure = {};
+    let tradeIndex = 0;
+
+    for(const group of groups) {
+      const concurrentCount = group.length; // #4: split stake across concurrent trades
+      for(const t of group) {
+        tradeIndex++;
+        const marketKey = (t.title||"unknown").toLowerCase();
+        const avgPrice = t.avgPrice>0&&t.avgPrice<1?t.avgPrice:0.5;
+        // #7: slippage increases effective entry price → lower win payout
+        const effectivePrice = Math.min(avgPrice + (avgPrice * slippagePct/100), 0.9999);
+
+        // #6: market cap check
+        if(marketCapEnabled) {
+          const currentExposure = marketExposure[marketKey] || 0;
+          if(currentExposure >= marketCapAmt) {
+            equity.push({i:tradeIndex,bal:parseFloat(balance.toFixed(2)),date:t.dateET||"",hour:t.hourET??null});
+            continue;
+          }
+        }
+
+        let stake=0;
+        if(btSizingMode==="fixed") {
+          stake=parseFloat(btFixedAmt)||10;
+        } else if(btSizingMode==="percentage") {
+          // % of leader's totalBought
+          const leaderBought = t.totalBought||0;
+          stake = leaderBought * (parseFloat(btPct)||50) / 100;
+          if(stake<=0) stake=5;
+        } else if(btSizingMode==="portfolio") {
+          // (leader trade size / leader portfolio value) × user balance
+          const leaderPortfolio = leaderPortfolioValues.get(t.id) || 1;
+          const leaderTradeFraction = (t.totalBought||0) / leaderPortfolio;
+          stake = leaderTradeFraction * (parseFloat(btPortfolioBalance)||balance);
+          if(stake<=0) stake=5;
+        }
+
+        // #4: divide stake by concurrent count
+        stake = stake / concurrentCount;
+        stake = Math.min(stake, balance);
+
+        if(stake<=0) {
+          equity.push({i:tradeIndex,bal:parseFloat(balance.toFixed(2)),date:t.dateET||"",hour:t.hourET??null});
+          continue;
+        }
+
+        // #6: track market exposure
+        if(marketCapEnabled) {
+          marketExposure[marketKey] = (marketExposure[marketKey]||0) + stake;
+        }
+
+        if(t.result==="win") {
+          balance += stake*(1-effectivePrice)/effectivePrice;
+          wins++;
+        } else {
+          balance -= stake;
+          losses++;
+        }
+        balance=Math.max(0,balance);
+        if(balance>peak) peak=balance;
+        const dd=((peak-balance)/peak)*100;
+        if(dd>maxDD) maxDD=dd;
+        equity.push({i:tradeIndex,bal:parseFloat(balance.toFixed(2)),date:t.dateET||"",hour:t.hourET??null});
+      }
+    }
+    return{startBal,endBal:balance,roi:((balance-startBal)/startBal)*100,wins,losses,maxDD,equity,total:wins+losses};
+  },[btStartBal,btSizingMode,btFixedAmt,btPct,btPortfolioBalance,btSlippage,btMarketCapEnabled,btMarketCap,leaderPortfolioValues]);
+
+  // ── #2: Filter logic with hourly multi-select ─────────────────────────────
   const btFilteredTrades=useMemo(()=>{
     let base = trades;
-    if(btSelectedMarkets.length > 0) {
-      base = base.filter(t => btSelectedMarkets.includes(getMarketCategory(t.title)));
-    }
     if(btMode==="custom") {
-      base = base.filter(t=>t.dateET>=btDateFrom&&t.dateET<=btDateTo);
+      base = trades.filter(t=>t.dateET>=btDateFrom&&t.dateET<=btDateTo);
     }
     if(btMode==="all") return base;
+    // Hourly multi-select takes priority
     if(btSelectedHours.length > 0) {
       return base.filter(t=>btSelectedHours.includes(t.hourET));
     }
+    // Block-based fallback
     const blockVal = btMode==="block" ? btBlock : btCustomBlock;
     if(blockVal===0) return base.filter(t=>t.hourET>=0&&t.hourET<7);
     if(blockVal===7) return base;
     return base.filter(t=>getBlock4(t.hourET)===blockVal-1);
-  },[trades,btMode,btBlock,btDateFrom,btDateTo,btCustomBlock,btSelectedHours,btSelectedMarkets]);
+  },[trades,btMode,btBlock,btDateFrom,btDateTo,btCustomBlock,btSelectedHours]);
 
   const allBlocksResults=useMemo(()=>{
     if(btMode!=="all") return null;
@@ -617,10 +462,12 @@ export default function App() {
   const storageColors={loading:"#f0c040",ready:"#505878",saving:"#f0c040",saved:"#00ff9d",error:"#ff4d6d"};
   const storageLabels={loading:"⏳ LOADING...",ready:"",saving:"💾 SAVING...",saved:`✓ SAVED ${lastSaved||""}`,error:"⚠ STORAGE ERROR"};
 
+  // ── #2: Hour toggle helper ──────────────────────────────────────────────────
   const toggleHour = (h) => {
     setBtSelectedHours(prev => prev.includes(h) ? prev.filter(x=>x!==h) : [...prev, h]);
   };
 
+  // ── #3: Equity curve custom tooltip ────────────────────────────────────────
   const EquityTooltip = ({active,payload}) => {
     if(!active||!payload||!payload[0]) return null;
     const d = payload[0].payload;
@@ -695,7 +542,6 @@ export default function App() {
             {wrSubTab==="dashboard"&&(
               <div>
                 <NightAlert nightNum={pctNum(stats.night.w,stats.night.l)} dayNum={pctNum(stats.day.w,stats.day.l)}/>
-                {expiredTradeCount>0&&<div style={{background:"#1a0800",border:"1px solid #ff9d00",padding:"6px 12px",fontSize:12,color:"#ff9d00",letterSpacing:1,marginBottom:12,borderRadius:2}}>⚠ {expiredTradeCount} expired/unclaimed position{expiredTradeCount!==1?"s":""} included as losses — WR may be lower than wallet claims</div>}
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8,marginBottom:14}}>
                   <StatCard label="Total Trades" value={stats.total.w+stats.total.l} sub={`${stats.total.w}W / ${stats.total.l}L`}/>
                   <StatCard label="Overall WR" value={pct(stats.total.w,stats.total.l)?`${pct(stats.total.w,stats.total.l)}%`:"—"} color={wrColor(pctNum(stats.total.w,stats.total.l))}/>
@@ -829,7 +675,6 @@ export default function App() {
                       <span style={{color:"#ffffff",minWidth:45}}>{HOUR_LABELS[t.hourET]}</span>
                       <span style={{color:t.result==="win"?"#00ff9d":"#ff4d6d"}}>{t.result==="win"?"WIN":"LOSS"}</span>
                       <span style={{color:"#505880",fontSize:12}}>{t.avgPrice>0?`@${t.avgPrice.toFixed(3)}`:""}</span>
-                      {t.expired&&<span style={{color:"#ff9d00",fontSize:10,letterSpacing:1}}>EXPIRED</span>}
                       <button onClick={()=>setTrades(tr=>tr.filter(x=>x.id!==t.id))} style={{color:"#505880",background:"none",border:"none",cursor:"pointer",fontSize:12,marginLeft:"auto"}}>✕</button>
                     </div>
                   ))}
@@ -932,197 +777,148 @@ export default function App() {
           ):(
             <div>
 
-              {/* ── 2-COLUMN LAYOUT ── */}
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12,alignItems:"start"}}>
+              {/* ── COPY TRADE SETTINGS ── */}
+              <div style={S.panel}>
+                <div style={S.secT}>COPY TRADE SETTINGS</div>
+                <div style={{display:"flex",gap:16,flexWrap:"wrap",alignItems:"flex-start"}}>
 
-                {/* ── LEFT: COPY TRADE SETTINGS + POSITION SIZING ── */}
-                <div style={S.panel}>
-                  <div style={S.secT}>SETTINGS & SIZING</div>
-
-                  <div style={{display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-start",marginBottom:12,paddingBottom:10,borderBottom:"1px solid #1e2040"}}>
-                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
-                      <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>START BAL ($)</label>
-                      <input type="number" value={btStartBal} onChange={e=>setBtStartBal(e.target.value)} style={{...S.inp,width:80}}/>
-                    </div>
-                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
-                      <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>SLIPPAGE (%)</label>
-                      <div style={{display:"flex",alignItems:"center",gap:4}}>
-                        <input type="number" value={btSlippage} onChange={e=>setBtSlippage(e.target.value)} min="0" max="10" step="0.1" style={{...S.inp,width:55}}/>
-                        <span style={{fontSize:11,color:"#7080a0"}}>%</span>
-                      </div>
-                      {parseFloat(btSlippage)>0&&<div style={{fontSize:10,color:"#f0c040"}}>$0.65→${(0.65*(1+parseFloat(btSlippage)/100)).toFixed(4)}</div>}
-                    </div>
-                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
-                      <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MAX $ / MARKET</label>
-                      <div style={{display:"flex",alignItems:"center",gap:4}}>
-                        <input type="checkbox" checked={btMarketCapEnabled} onChange={e=>setBtMarketCapEnabled(e.target.checked)} style={{accentColor:"#00ff9d"}}/>
-                        <input type="number" value={btMarketCap} onChange={e=>setBtMarketCap(e.target.value)} disabled={!btMarketCapEnabled}
-                          placeholder="e.g. 50" style={{...S.inp,width:65,opacity:btMarketCapEnabled?1:0.4}}/>
-                      </div>
-                      {btMarketCapEnabled&&<div style={{fontSize:10,color:"#b0bcd0"}}>YES+NO share cap</div>}
-                    </div>
-                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
-                      <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MAX $ / DAY (ET)</label>
-                      <div style={{display:"flex",alignItems:"center",gap:4}}>
-                        <input type="checkbox" checked={btDailyLimitEnabled} onChange={e=>setBtDailyLimitEnabled(e.target.checked)} style={{accentColor:"#00ff9d"}}/>
-                        <input type="number" value={btDailyLimit} onChange={e=>setBtDailyLimit(e.target.value)} disabled={!btDailyLimitEnabled}
-                          placeholder="e.g. 100" style={{...S.inp,width:65,opacity:btDailyLimitEnabled?1:0.4}}/>
-                      </div>
-                      {btDailyLimitEnabled&&<div style={{fontSize:10,color:"#b0bcd0"}}>resets each ET day</div>}
-                    </div>
+                  {/* Starting balance */}
+                  <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                    <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>STARTING BALANCE ($)</label>
+                    <input type="number" value={btStartBal} onChange={e=>setBtStartBal(e.target.value)} style={{...S.inp,width:90}}/>
                   </div>
 
-                  <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
-                    {[["fixed","FIXED $"],["percentage","PCT"],["portfolio","PORTFOLIO"]].map(([k,l])=>(
-                      <button key={k} onClick={()=>setBtSizingMode(k)} style={S.seg(btSizingMode===k)}>{l}</button>
-                    ))}
-                  </div>
-                  {btSizingMode==="fixed"&&(
+                  {/* #7 Slippage */}
+                  <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                    <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>SLIPPAGE (%)</label>
                     <div style={{display:"flex",alignItems:"center",gap:6}}>
-                      <span style={{fontSize:12,color:"#b0bcd0"}}>$</span>
-                      <input type="number" value={btFixedAmt} onChange={e=>setBtFixedAmt(e.target.value)} style={{...S.inp,width:80}}/>
-                      <span style={{fontSize:11,color:"#7080a0"}}>USDC / trade</span>
+                      <input type="number" value={btSlippage} onChange={e=>setBtSlippage(e.target.value)} min="0" max="10" step="0.1" style={{...S.inp,width:60}}/>
+                      <span style={{fontSize:12,color:"#7080a0"}}>% entry</span>
                     </div>
-                  )}
-                  {btSizingMode==="percentage"&&(
-                    <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                      <div style={{display:"flex",alignItems:"center",gap:6}}>
-                        <input type="number" value={btPct} onChange={e=>setBtPct(e.target.value)} min="1" max="500" style={{...S.inp,width:65}}/>
-                        <span style={{fontSize:11,color:"#b0bcd0"}}>% of leader's totalBought</span>
-                      </div>
-                      <div style={{fontSize:11,color:"#7080a0"}}>leader 100 USDC → you stake {btPct} USDC</div>
-                    </div>
-                  )}
-                  {btSizingMode==="portfolio"&&(
-                    <div style={{display:"flex",flexDirection:"column",gap:8}}>
-                      <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
-                        <div style={{display:"flex",flexDirection:"column",gap:3}}>
-                          <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MY BALANCE ($)</label>
-                          <input type="number" value={btPortfolioBalance} onChange={e=>setBtPortfolioBalance(e.target.value)} style={{...S.inp,width:80}}/>
-                        </div>
-                        <div style={{display:"flex",flexDirection:"column",gap:3}}>
-                          <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>LEADER BAL ($)</label>
-                          <input type="number" value={btLeaderBalance} onChange={e=>setBtLeaderBalance(e.target.value)} style={{...S.inp,width:80}}/>
-                        </div>
-                      </div>
-                      <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                        <span style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MULTIPLIER</span>
-                        <div style={{display:"flex",gap:4,alignItems:"center",flexWrap:"wrap"}}>
-                          {[0.25,0.5,1,2,3].map(m=>(
-                            <button key={m} onClick={()=>setBtMultiplier(m)}
-                              style={{...S.seg(parseFloat(btMultiplier)===m),fontSize:11,padding:"3px 8px"}}>
-                              {m}x
-                            </button>
-                          ))}
-                          <input type="number" value={btMultiplier} onChange={e=>setBtMultiplier(e.target.value)}
-                            min="0.01" step="0.01" style={{...S.inp,width:55,marginLeft:2}}/>
-                        </div>
-                      </div>
-                      <div style={{fontSize:10,color:"#7080a0"}}>stake = (leader trade / leader portfolio) × my bal × mult</div>
-                    </div>
-                  )}
-                </div>
-
-                {/* ── RIGHT: TIME BLOCK MODE ── */}
-                <div style={S.panel}>
-                  <div style={S.secT}>TIME BLOCK MODE</div>
-
-                  {/* ── Market Filter ── */}
-                  <div style={{marginBottom:10}}>
-                    <button onClick={()=>setBtMarketExpanded(x=>!x)}
-                      style={{...S.seg(btSelectedMarkets.length>0),fontSize:11,display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
-                      MARKET FILTER {btMarketExpanded?"▲":"▼"}
-                      {btSelectedMarkets.length>0
-                        ? <span style={{color:"#00ff9d",marginLeft:4}}>{btSelectedMarkets.length} selected</span>
-                        : <span style={{color:"#7080a0",marginLeft:4}}>ALL</span>}
-                    </button>
-                    {btMarketExpanded&&(
-                      <div style={{background:"#080818",border:"1px solid #1e2040",borderRadius:2,padding:"8px",maxHeight:220,overflowY:"auto"}}>
-                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,paddingBottom:6,borderBottom:"1px solid #1e2040"}}>
-                          <span style={{fontSize:11,color:"#7080a0",letterSpacing:1}}>ALL MARKETS ({trades.length} trades)</span>
-                          <button onClick={()=>setBtSelectedMarkets([])}
-                            style={{...S.btn("sec",false),fontSize:10,padding:"2px 8px",opacity:btSelectedMarkets.length===0?1:0.5}}>
-                            ALL
-                          </button>
-                        </div>
-                        {marketCategories.map(({name,count})=>{
-                          const active = btSelectedMarkets.includes(name);
-                          return(
-                            <div key={name}
-                              onClick={()=>setBtSelectedMarkets(prev=>
-                                prev.includes(name) ? prev.filter(x=>x!==name) : [...prev, name]
-                              )}
-                              style={{display:"flex",justifyContent:"space-between",alignItems:"center",
-                                padding:"4px 6px",borderRadius:2,cursor:"pointer",marginBottom:2,
-                                background:active?"#001f10":"transparent",
-                                border:`1px solid ${active?"#00ff9d":"transparent"}`}}>
-                              <span style={{fontSize:12,color:active?"#00ff9d":"#c0cce0",flex:1,marginRight:8}}>{name}</span>
-                              <span style={{fontSize:11,color:"#7080a0",whiteSpace:"nowrap"}}>{count}t</span>
-                            </div>
-                          );
-                        })}
+                    {parseFloat(btSlippage)>0&&(
+                      <div style={{fontSize:11,color:"#f0c040",marginTop:2}}>
+                        e.g. $0.65 → ${(0.65*(1+parseFloat(btSlippage)/100)).toFixed(4)} effective
                       </div>
                     )}
                   </div>
 
-                  <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
-                    {[["block","SPECIFIC"],["all","COMPARE ALL"],["custom","CUSTOM"]].map(([k,l])=>(
-                      <button key={k} onClick={()=>{setBtMode(k);setBtSelectedHours([]);}} style={S.seg(btMode===k)}>{l}</button>
-                    ))}
+                  {/* #6 Market cap */}
+                  <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                    <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MAX $ PER MARKET</label>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <input type="checkbox" checked={btMarketCapEnabled} onChange={e=>setBtMarketCapEnabled(e.target.checked)} style={{accentColor:"#00ff9d"}}/>
+                      <input type="number" value={btMarketCap} onChange={e=>setBtMarketCap(e.target.value)} disabled={!btMarketCapEnabled}
+                        placeholder="e.g. 50" style={{...S.inp,width:70,opacity:btMarketCapEnabled?1:0.4}}/>
+                      <span style={{fontSize:12,color:"#7080a0"}}>cap</span>
+                    </div>
+                    {btMarketCapEnabled&&<div style={{fontSize:11,color:"#b0bcd0",marginTop:2}}>YES+NO sides share cap per market</div>}
                   </div>
 
-                  {(btMode==="block"||btMode==="custom")&&(
-                    <div style={{display:"flex",flexDirection:"column",gap:8}}>
-                      {btMode==="custom"&&(
-                        <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
-                          <input type="date" value={btDateFrom} onChange={e=>setBtDateFrom(e.target.value)} style={{...S.inp,colorScheme:"dark"}}/>
-                          <span style={{fontSize:12,color:"#b0bcd0"}}>to</span>
-                          <input type="date" value={btDateTo} onChange={e=>setBtDateTo(e.target.value)} style={{...S.inp,colorScheme:"dark"}}/>
-                        </div>
-                      )}
-                      {btSelectedHours.length===0&&(
-                        <select
-                          value={btMode==="block"?btBlock:btCustomBlock}
-                          onChange={e=>{btMode==="block"?setBtBlock(parseInt(e.target.value)):setBtCustomBlock(parseInt(e.target.value));}}
-                          style={{...S.inp,maxWidth:220}}>
-                          <option value={0}>Night (12AM–7AM)</option>
-                          {BLOCK4_LABELS.map((l,b)=><option key={b} value={b+1}>{l}</option>)}
-                          <option value={7}>All hours</option>
-                        </select>
-                      )}
-                      <div>
-                        <button onClick={()=>setBtHourlyExpanded(x=>!x)} style={{...S.seg(btSelectedHours.length>0),fontSize:11,display:"flex",alignItems:"center",gap:6}}>
-                          HOURLY SELECT {btHourlyExpanded?"▲":"▼"}
-                          {btSelectedHours.length>0&&<span style={{color:"#00ff9d",marginLeft:4}}>{btSelectedHours.length} selected</span>}
-                        </button>
-                        {btHourlyExpanded&&(
-                          <div style={{marginTop:8}}>
-                            <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:6}}>
-                              {HOURS.map(h=>(
-                                <button key={h} onClick={()=>toggleHour(h)} style={S.hourBtn(btSelectedHours.includes(h))}>
-                                  {HOUR_LABELS[h]}
-                                </button>
-                              ))}
-                            </div>
-                            <div style={{display:"flex",gap:5}}>
-                              <button onClick={()=>setBtSelectedHours([...HOURS])} style={{...S.btn("sec",false),fontSize:11,padding:"3px 8px"}}>ALL</button>
-                              <button onClick={()=>setBtSelectedHours([])} style={{...S.btn("sec",false),fontSize:11,padding:"3px 8px"}}>NONE</button>
-                              <button onClick={()=>setBtSelectedHours(HOURS.filter(h=>h>=0&&h<7))} style={{...S.btn("sec",false),fontSize:11,padding:"3px 8px"}}>NIGHT</button>
-                              <button onClick={()=>setBtSelectedHours(HOURS.filter(h=>h>=7))} style={{...S.btn("sec",false),fontSize:11,padding:"3px 8px"}}>DAY</button>
-                            </div>
-                            {btSelectedHours.length>0&&(
-                              <div style={{fontSize:11,color:"#00ff9d",marginTop:5}}>
-                                {[...btSelectedHours].sort((a,b)=>a-b).map(h=>HOUR_LABELS[h]).join(", ")}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
+                </div>
+              </div>
+
+              {/* ── POSITION SIZING ── */}
+              <div style={S.panel}>
+                <div style={S.secT}>POSITION SIZING</div>
+                <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
+                  {[["fixed","FIXED $"],["percentage","PERCENTAGE"],["portfolio","PORTFOLIO-WEIGHTED"]].map(([k,l])=>(
+                    <button key={k} onClick={()=>setBtSizingMode(k)} style={S.seg(btSizingMode===k)}>{l}</button>
+                  ))}
+                </div>
+                {btSizingMode==="fixed"&&(
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:12,color:"#b0bcd0"}}>$</span>
+                    <input type="number" value={btFixedAmt} onChange={e=>setBtFixedAmt(e.target.value)} style={{...S.inp,width:80}}/>
+                    <span style={{fontSize:12,color:"#b0bcd0"}}>USDC per trade regardless of leader size</span>
+                  </div>
+                )}
+                {btSizingMode==="percentage"&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <input type="number" value={btPct} onChange={e=>setBtPct(e.target.value)} min="1" max="500" style={{...S.inp,width:70}}/>
+                      <span style={{fontSize:12,color:"#b0bcd0"}}>% of leader's totalBought per trade</span>
                     </div>
-                  )}
+                    <div style={{fontSize:11,color:"#7080a0"}}>e.g. leader buys 100 USDC → you stake {btPct} USDC</div>
+                  </div>
+                )}
+                {btSizingMode==="portfolio"&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{fontSize:12,color:"#b0bcd0"}}>YOUR BALANCE $</span>
+                      <input type="number" value={btPortfolioBalance} onChange={e=>setBtPortfolioBalance(e.target.value)} style={{...S.inp,width:90}}/>
+                    </div>
+                    <div style={{fontSize:11,color:"#7080a0"}}>Stake = (leader trade / leader portfolio) × your balance</div>
+                    <div style={{fontSize:11,color:"#7080a0"}}>Leader portfolio reconstructed trade-by-trade from totalBought − losses</div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── TIME BLOCK MODE ── */}
+              <div style={S.panel}>
+                <div style={S.secT}>TIME BLOCK MODE</div>
+                <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
+                  {[["block","SPECIFIC BLOCK"],["all","COMPARE ALL"],["custom","CUSTOM RANGE"]].map(([k,l])=>(
+                    <button key={k} onClick={()=>{setBtMode(k);setBtSelectedHours([]);}} style={S.seg(btMode===k)}>{l}</button>
+                  ))}
                 </div>
 
-              </div>{/* end 2-col grid */}
+                {(btMode==="block"||btMode==="custom")&&(
+                  <div style={{display:"flex",flexDirection:"column",gap:8}}>
+
+                    {/* Date range (custom mode only) */}
+                    {btMode==="custom"&&(
+                      <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                        <input type="date" value={btDateFrom} onChange={e=>setBtDateFrom(e.target.value)} style={S.inp}/>
+                        <span style={{fontSize:12,color:"#b0bcd0"}}>to</span>
+                        <input type="date" value={btDateTo} onChange={e=>setBtDateTo(e.target.value)} style={S.inp}/>
+                      </div>
+                    )}
+
+                    {/* Block dropdown — hidden when hourly select is active */}
+                    {btSelectedHours.length===0&&(
+                      <select
+                        value={btMode==="block"?btBlock:btCustomBlock}
+                        onChange={e=>{btMode==="block"?setBtBlock(parseInt(e.target.value)):setBtCustomBlock(parseInt(e.target.value));}}
+                        style={{...S.inp,maxWidth:240}}>
+                        <option value={0}>Night (12AM–7AM)</option>
+                        {BLOCK4_LABELS.map((l,b)=><option key={b} value={b+1}>{l}</option>)}
+                        <option value={7}>All hours</option>
+                      </select>
+                    )}
+
+                    {/* #2: Hourly multi-select */}
+                    <div>
+                      <button onClick={()=>setBtHourlyExpanded(x=>!x)} style={{...S.seg(btSelectedHours.length>0),fontSize:11,display:"flex",alignItems:"center",gap:6}}>
+                        HOURLY SELECT {btHourlyExpanded?"▲":"▼"}
+                        {btSelectedHours.length>0&&<span style={{color:"#00ff9d",marginLeft:4}}>{btSelectedHours.length} selected</span>}
+                      </button>
+                      {btHourlyExpanded&&(
+                        <div style={{marginTop:8}}>
+                          <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:8}}>
+                            {HOURS.map(h=>(
+                              <button key={h} onClick={()=>toggleHour(h)} style={S.hourBtn(btSelectedHours.includes(h))}>
+                                {HOUR_LABELS[h]}
+                              </button>
+                            ))}
+                          </div>
+                          <div style={{display:"flex",gap:6}}>
+                            <button onClick={()=>setBtSelectedHours([...HOURS])} style={{...S.btn("sec",false),fontSize:11,padding:"4px 10px"}}>ALL</button>
+                            <button onClick={()=>setBtSelectedHours([])} style={{...S.btn("sec",false),fontSize:11,padding:"4px 10px"}}>NONE</button>
+                            <button onClick={()=>setBtSelectedHours(HOURS.filter(h=>h>=0&&h<7))} style={{...S.btn("sec",false),fontSize:11,padding:"4px 10px"}}>NIGHT</button>
+                            <button onClick={()=>setBtSelectedHours(HOURS.filter(h=>h>=7))} style={{...S.btn("sec",false),fontSize:11,padding:"4px 10px"}}>DAY</button>
+                          </div>
+                          {btSelectedHours.length>0&&(
+                            <div style={{fontSize:11,color:"#00ff9d",marginTop:5}}>
+                              Backtesting hours: {[...btSelectedHours].sort((a,b)=>a-b).map(h=>HOUR_LABELS[h]).join(", ")}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                  </div>
+                )}
+              </div>
 
               {/* ── COMPARE ALL RESULTS ── */}
               {btMode==="all"&&allBlocksResults&&(
@@ -1163,194 +959,21 @@ export default function App() {
                     <StatCard label="Trades" value={btResult.total} sub="in selected block"/>
                   </div>
                   <div style={S.panel}>
-                    {/* ── Equity curve header + overlay controls ── */}
-                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,flexWrap:"wrap",gap:6}}>
-                      <div style={S.secT}>EQUITY CURVE {savedCurves.length>0&&<span style={{color:"#7080a0",fontSize:10}}>+{savedCurves.length} saved</span>}</div>
-                      <div style={{display:"flex",gap:6}}>
-                        {btResult&&btResult.equity.length>1&&(()=>{
-                          const nextColor = OVERLAY_COLORS[savedCurves.length % OVERLAY_COLORS.length];
-                          const mktLabel = btSelectedMarkets.length>0 ? btSelectedMarkets.slice(0,2).join(", ")+(btSelectedMarkets.length>2?` +${btSelectedMarkets.length-2}`:"") : "All Markets";
-                          const blockLabel = btSelectedHours.length>0
-                            ? `${btSelectedHours.length}hr`
-                            : btMode==="custom" ? `${btDateFrom}→${btDateTo}`
-                            : btBlock===0 ? "Night" : btBlock===7 ? "All hrs" : BLOCK4_LABELS[btBlock-1];
-                          const label = `${blockLabel} · ${mktLabel}`;
-                          return(
-                            <button onClick={()=>{
-                              setPendingCurve({
-                                color: nextColor,
-                                equity: normalizeEquity(btResult.equity),
-                                roi: btResult.roi,
-                                wins: btResult.wins,
-                                losses: btResult.losses,
-                                maxDD: btResult.maxDD,
-                                startBal: btResult.startBal,
-                                endBal: btResult.endBal,
-                              });
-                              setPendingName(label);
-                            }} style={{...S.btn("sec",false),fontSize:10,padding:"3px 10px",borderColor:nextColor,color:nextColor}}>
-                              + ADD TO OVERLAY
-                            </button>
-                          );
-                        })()}
-                        {savedCurves.length>0&&(
-                          <button onClick={()=>setSavedCurves([])} style={{...S.btn("danger",false),fontSize:10,padding:"3px 10px"}}>
-                            CLEAR
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {btResult.equity.length>1?(()=>{
-                      const currentNorm = normalizeEquity(btResult.equity);
-                      const POINTS = 200;
-                      const merged = Array.from({length: POINTS+1}, (_,i) => {
-                        const x = parseFloat(((i/POINTS)*100).toFixed(2));
-                        const row = {x};
-                        const ci = Math.round((i/POINTS)*(currentNorm.length-1));
-                        row["live"] = currentNorm[Math.min(ci, currentNorm.length-1)]?.bal ?? null;
-                        savedCurves.forEach((curve, ci2) => {
-                          const si = Math.round((i/POINTS)*(curve.equity.length-1));
-                          row[`saved_${ci2}`] = curve.equity[Math.min(si, curve.equity.length-1)]?.bal ?? null;
-                        });
-                        return row;
-                      });
-
-                      return(
-                        <div>
-                          <ResponsiveContainer width="100%" height={220}>
-                            <LineChart data={merged} margin={{top:5,right:10,left:0,bottom:5}}>
-                              <XAxis dataKey="x" hide/>
-                              <YAxis domain={["auto","auto"]} tick={{fill:"#7080a0",fontSize:12}} width={55} tickFormatter={v=>`$${v}`}/>
-                              <Tooltip
-                                content={({active,payload})=>{
-                                  if(!active||!payload||!payload.length) return null;
-                                  return(
-                                    <div style={{background:"#0d0d1f",border:"1px solid #1e2040",fontFamily:"'JetBrains Mono',monospace",fontSize:12,padding:"8px 12px"}}>
-                                      {payload.map((p,i)=>(
-                                        <div key={i} style={{color:p.stroke||p.color,marginBottom:2}}>
-                                          <span style={{color:"#7080a0",marginRight:6}}>{p.name==="live"?"CURRENT":savedCurves[parseInt(p.name.replace("saved_",""))]?.label}</span>
-                                          ${(p.value||0).toFixed(2)}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  );
-                                }}
-                              />
-                              <ReferenceLine y={parseFloat(btStartBal)} stroke="#505878" strokeDasharray="4 4"/>
-                              <Line type="monotone" dataKey="live" name="live"
-                                stroke="#ffffff" dot={false} strokeWidth={1.5} strokeOpacity={0.9}/>
-                              {savedCurves.map((curve,i)=>(
-                                <Line key={i} type="monotone" dataKey={`saved_${i}`} name={`saved_${i}`}
-                                  stroke={curve.color} dot={false} strokeWidth={1.5} strokeOpacity={0.85}/>
-                              ))}
-                            </LineChart>
-                          </ResponsiveContainer>
-
-                          {savedCurves.length>0&&(()=>{
-                            const allCurves = [
-                              { label:"CURRENT", color:"#ffffff", roi:btResult.roi, wins:btResult.wins,
-                                losses:btResult.losses, maxDD:btResult.maxDD, isCurrent:true },
-                              ...savedCurves.map(c=>({...c, isCurrent:false}))
-                            ];
-                            const bestROI   = Math.max(...allCurves.map(c=>c.roi));
-                            const bestWR    = Math.max(...allCurves.map(c=>c.wins+c.losses>0?c.wins/(c.wins+c.losses):0));
-                            const bestDD    = Math.min(...allCurves.map(c=>c.maxDD));
-                            const bestRisk  = Math.max(...allCurves.map(c=>c.maxDD>0?c.roi/c.maxDD:-Infinity));
-                            return(
-                              <div style={{marginTop:10,paddingTop:8,borderTop:"1px solid #1e2040"}}>
-                                <div style={{display:"flex",flexWrap:"wrap",gap:8,marginBottom:10}}>
-                                  {allCurves.map((curve,i)=>(
-                                    <div key={i} style={{display:"flex",alignItems:"center",gap:5,fontSize:11}}>
-                                      <div style={{width:16,height:2,background:curve.color,borderRadius:1}}/>
-                                      <span style={{color:curve.color==="ffffff"?"#ffffff":"#c0cce0",maxWidth:140,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{curve.label}</span>
-                                      {!curve.isCurrent&&<button onClick={()=>setSavedCurves(prev=>prev.filter((_,j)=>j!==i-1))}
-                                        style={{background:"none",border:"none",color:"#505880",cursor:"pointer",fontSize:11,padding:0}}>✕</button>}
-                                    </div>
-                                  ))}
-                                </div>
-                                <div style={{overflowX:"auto"}}>
-                                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,fontFamily:"'JetBrains Mono',monospace"}}>
-                                    <thead>
-                                      <tr style={{borderBottom:"1px solid #1e2040"}}>
-                                        <th style={{textAlign:"left",padding:"4px 8px",fontSize:10,letterSpacing:2,color:"#7080a0",fontWeight:"normal"}}>CURVE</th>
-                                        <th style={{textAlign:"right",padding:"4px 8px",fontSize:10,letterSpacing:2,color:"#7080a0",fontWeight:"normal"}}>ROI</th>
-                                        <th style={{textAlign:"right",padding:"4px 8px",fontSize:10,letterSpacing:2,color:"#7080a0",fontWeight:"normal"}}>WIN%</th>
-                                        <th style={{textAlign:"right",padding:"4px 8px",fontSize:10,letterSpacing:2,color:"#7080a0",fontWeight:"normal"}}>MAX DD</th>
-                                        <th style={{textAlign:"right",padding:"4px 8px",fontSize:10,letterSpacing:2,color:"#7080a0",fontWeight:"normal",whiteSpace:"nowrap"}}>RISK SCORE</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody>
-                                      {allCurves.map((curve,i)=>{
-                                        const wr = curve.wins+curve.losses>0 ? curve.wins/(curve.wins+curve.losses)*100 : 0;
-                                        const riskScore = curve.maxDD>0 ? curve.roi/curve.maxDD : 0;
-                                        const isBestROI   = Math.abs(curve.roi - bestROI) < 0.001;
-                                        const isBestWR    = Math.abs(wr/100 - bestWR) < 0.001;
-                                        const isBestDD    = Math.abs(curve.maxDD - bestDD) < 0.001;
-                                        const isBestRisk  = Math.abs(riskScore - bestRisk) < 0.001;
-                                        const rowBg = i%2===0?"#0a0a1a":"#0d0d1f";
-                                        return(
-                                          <tr key={i} style={{background:rowBg,borderBottom:"1px solid #131330"}}>
-                                            <td style={{padding:"5px 8px"}}>
-                                              <div style={{display:"flex",alignItems:"center",gap:6}}>
-                                                <div style={{width:10,height:10,borderRadius:"50%",background:curve.color,flexShrink:0}}/>
-                                                <span style={{color:"#c0cce0",maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{curve.label}</span>
-                                              </div>
-                                            </td>
-                                            <td style={{textAlign:"right",padding:"5px 8px",color:isBestROI?"#00ff9d":curve.roi>=0?"#a0c8a0":"#ff4d6d",fontWeight:isBestROI?"bold":"normal"}}>
-                                              {curve.roi>=0?"+":""}{curve.roi.toFixed(1)}%{isBestROI?" ★":""}
-                                            </td>
-                                            <td style={{textAlign:"right",padding:"5px 8px",color:isBestWR?"#00ff9d":wr>=50?"#a0c8a0":"#ff4d6d",fontWeight:isBestWR?"bold":"normal"}}>
-                                              {wr.toFixed(1)}%{isBestWR?" ★":""}
-                                            </td>
-                                            <td style={{textAlign:"right",padding:"5px 8px",color:isBestDD?"#00ff9d":curve.maxDD<20?"#a0c8a0":"#ff4d6d",fontWeight:isBestDD?"bold":"normal"}}>
-                                              {curve.maxDD.toFixed(1)}%{isBestDD?" ★":""}
-                                            </td>
-                                            <td style={{textAlign:"right",padding:"5px 8px",color:isBestRisk?"#00ff9d":riskScore>0?"#a0c8a0":"#ff4d6d",fontWeight:isBestRisk?"bold":"normal"}}>
-                                              {riskScore.toFixed(2)}{isBestRisk?" ★":""}
-                                            </td>
-                                          </tr>
-                                        );
-                                      })}
-                                    </tbody>
-                                  </table>
-                                  <div style={{fontSize:10,color:"#505878",marginTop:5,letterSpacing:1}}>
-                                    RISK SCORE = ROI ÷ MAX DRAWDOWN · ★ = best in column
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })()}
-                        </div>
-                      );
-                    })():<div style={{color:"#505880",fontSize:14,padding:"20px 0",textAlign:"center"}}>Not enough data</div>}
+                    <div style={S.secT}>EQUITY CURVE</div>
+                    {btResult.equity.length>1?(
+                      <ResponsiveContainer width="100%" height={200}>
+                        <LineChart data={btResult.equity} margin={{top:5,right:10,left:0,bottom:5}}>
+                          <XAxis dataKey="i" hide/>
+                          <YAxis domain={["auto","auto"]} tick={{fill:"#7080a0",fontSize:12}} width={55} tickFormatter={v=>`$${v}`}/>
+                          <Tooltip content={<EquityTooltip/>}/>
+                          <ReferenceLine y={parseFloat(btStartBal)} stroke="#505878" strokeDasharray="4 4"/>
+                          <Line type="monotone" dataKey="bal" stroke={btResult.roi>=0?"#00ff9d":"#ff4d6d"} dot={false} strokeWidth={1.5}/>
+                        </LineChart>
+                      </ResponsiveContainer>
+                    ):<div style={{color:"#505880",fontSize:14,padding:"20px 0",textAlign:"center"}}>Not enough data</div>}
                   </div>
                 </div>
               )}
-
-              {/* ── EXPIRED POSITIONS BANNER ── */}
-              {expiredTradeCount>0&&btMode!=="all"&&(
-                <div style={{background:"#1a0800",border:"1px solid #ff9d00",padding:"7px 14px",fontSize:12,color:"#ff9d00",letterSpacing:1,marginBottom:12,borderRadius:2}}>
-                  ⚠ {expiredTradeCount} expired/unclaimed position{expiredTradeCount!==1?"s":""} included as losses in this backtest
-                </div>
-              )}
-
-              {/* ── SKIP WARNING BANNER ── */}
-              {btMode!=="all"&&btResult&&(()=>{
-                const s = btResult.skipped;
-                const total = s.marketCap + s.dailyLimit + s.insufficientBalance;
-                if(total===0) return null;
-                const parts = [
-                  s.marketCap>0 && `${s.marketCap} market cap`,
-                  s.dailyLimit>0 && `${s.dailyLimit} daily limit`,
-                  s.insufficientBalance>0 && `${s.insufficientBalance} insufficient balance`,
-                ].filter(Boolean).join(" · ");
-                return(
-                  <div style={{background:"#1a1000",border:"1px solid #f0c040",padding:"7px 14px",fontSize:12,color:"#f0c040",letterSpacing:1,marginBottom:12,borderRadius:2}}>
-                    ⚠ {total} trade{total!==1?"s":""} skipped — {parts}
-                  </div>
-                );
-              })()}
 
               {btMode!=="all"&&btFilteredTrades.length===0&&(
                 <div style={{textAlign:"center",padding:"30px 0",color:"#505880",fontSize:13,letterSpacing:2}}>NO TRADES MATCH SELECTED BLOCK / DATE RANGE</div>
@@ -1358,62 +981,6 @@ export default function App() {
 
             </div>
           )}
-        </div>
-      )}
-
-
-      {/* ── Overlay Naming Modal ── */}
-      {pendingCurve&&(
-        <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.7)",
-          display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}}
-          onClick={(e)=>{if(e.target===e.currentTarget){setPendingCurve(null);setPendingName("");}}}>
-          <div style={{background:"#0d0d1f",border:`1px solid ${pendingCurve.color}`,borderRadius:4,
-            padding:"20px 24px",minWidth:340,fontFamily:"'JetBrains Mono',monospace"}}>
-            <div style={{fontSize:11,letterSpacing:3,color:"#c0cce0",marginBottom:14,textTransform:"uppercase"}}>
-              Name This Overlay
-            </div>
-            <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:10}}>
-              {["Night","4AM–8AM","8AM–12PM","12PM–4PM","4PM–8PM","All Hours","Bitcoin","Custom"].map(p=>(
-                <button key={p} onClick={()=>setPendingName(p)}
-                  style={{...S.seg(pendingName===p),fontSize:10,padding:"3px 8px"}}>
-                  {p}
-                </button>
-              ))}
-            </div>
-            <input
-              autoFocus
-              value={pendingName}
-              onChange={e=>setPendingName(e.target.value)}
-              onKeyDown={e=>{
-                if(e.key==="Enter"&&pendingName.trim()){
-                  setSavedCurves(prev=>[...prev,{...pendingCurve,label:pendingName.trim()}]);
-                  setPendingCurve(null);setPendingName("");
-                }
-                if(e.key==="Escape"){setPendingCurve(null);setPendingName("");}
-              }}
-              placeholder="e.g. Night · Bitcoin"
-              style={{...S.inp,width:"100%",boxSizing:"border-box",marginBottom:14,fontSize:13,padding:"8px 10px"}}
-            />
-            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16}}>
-              <div style={{width:24,height:3,background:pendingCurve.color,borderRadius:2}}/>
-              <span style={{fontSize:11,color:"#7080a0"}}>
-                ROI {pendingCurve.roi>=0?"+":""}{pendingCurve.roi.toFixed(1)}% · DD {pendingCurve.maxDD.toFixed(1)}%
-              </span>
-            </div>
-            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
-              <button onClick={()=>{setPendingCurve(null);setPendingName("");}}
-                style={S.btn("sec",false)}>CANCEL</button>
-              <button
-                disabled={!pendingName.trim()}
-                onClick={()=>{
-                  setSavedCurves(prev=>[...prev,{...pendingCurve,label:pendingName.trim()}]);
-                  setPendingCurve(null);setPendingName("");
-                }}
-                style={{...S.btn("primary",!pendingName.trim()),minWidth:80}}>
-                SAVE
-              </button>
-            </div>
-          </div>
         </div>
       )}
 
