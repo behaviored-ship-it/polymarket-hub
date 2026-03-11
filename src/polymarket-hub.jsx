@@ -25,13 +25,13 @@ function fmtMoney(n) { return (n>=0?"+":"")+`$${Math.abs(n).toFixed(2)}`; }
 // ─── Win/Loss classification from curPrice ───────────────────────────────────
 // curPrice === 1 → trader's outcome resolved YES (win)
 // curPrice === 0 → trader's outcome resolved NO (loss)
-// Mid-price on closed positions = ambiguous, skip or classify conservatively
+// Tightened thresholds: resolved 5-min markets go cleanly to 0 or 1
 function classifyResult(curPrice) {
   const cp = parseFloat(curPrice);
   if (isNaN(cp)) return null; // can't classify
-  if (cp >= 0.99) return "win";
-  if (cp <= 0.01) return "loss";
-  return null; // ambiguous — not clearly resolved
+  if (cp >= 0.90) return "win";
+  if (cp <= 0.10) return "loss";
+  return null; // genuinely mid-price = market may not have resolved yet
 }
 
 // ─── True per-trade PnL from position fields ─────────────────────────────────
@@ -438,10 +438,22 @@ export default function App() {
             const avg = parseFloat(op.avgPrice || 0.5);
             const totalB = parseFloat(op.totalBought || 0);
             // Expired/resolved: price converged to near 0 (loss) or near 1 (win)
-            const isExpiredWin  = cur >= 0.99;
-            const isExpiredLoss = cur <= 0.01;
-            // Ambiguous mid-price on what appears stale — conservative = loss
-            const isAmbiguous   = !isExpiredWin && !isExpiredLoss && cur > 0;
+            const isExpiredWin  = cur >= 0.90;
+            const isExpiredLoss = cur <= 0.10;
+            // Mid-price: only treat as expired loss if the market date in the title has passed
+            // Title format: "Bitcoin Up or Down - March 9, 12:25AM-12:30AM ET"
+            let titleExpired = false;
+            const titleStr = op.title || "";
+            const dateMatch = titleStr.match(/(\w+ \d+),\s*[\d:]+[AP]M/i);
+            if (dateMatch) {
+              try {
+                const parsedDate = new Date(`${dateMatch[1]}, 2026`);
+                const now = new Date();
+                // If the market date is > 1 hour in the past, it's expired
+                titleExpired = !isNaN(parsedDate) && (now - parsedDate) > 3600000;
+              } catch(_) {}
+            }
+            const isAmbiguous = !isExpiredWin && !isExpiredLoss && cur > 0 && titleExpired;
             if (isExpiredWin || isExpiredLoss || isAmbiguous) {
               const result = isExpiredWin ? "win" : "loss";
               const effectiveCur = isExpiredWin ? 1 : 0;
@@ -726,6 +738,83 @@ export default function App() {
   // ── Computed: total truePnl from loaded trades (WR tab summary) ─────────────
   const totalTruePnl = useMemo(() => trades.reduce((sum, t) => sum + (t.truePnl || 0), 0), [trades]);
 
+  // ── Edge Metrics ───────────────────────────────────────────────────────────
+  const edgeMetrics = useMemo(() => {
+    if (trades.length === 0) return null;
+    const wins = trades.filter(t => t.result === "win");
+    const losses = trades.filter(t => t.result === "loss");
+    const totalW = wins.length;
+    const totalL = losses.length;
+    const totalT = totalW + totalL;
+    if (totalT === 0) return null;
+
+    const wr = totalW / totalT;
+    const lr = totalL / totalT;
+
+    // Average win/loss in dollars (truePnl)
+    const avgWinPnl = totalW > 0 ? wins.reduce((s, t) => s + (t.truePnl || 0), 0) / totalW : 0;
+    const avgLossPnl = totalL > 0 ? Math.abs(losses.reduce((s, t) => s + (t.truePnl || 0), 0) / totalL) : 0;
+
+    // Average cost basis (dollars staked per trade)
+    const avgStake = trades.reduce((s, t) => s + (t.costBasis || 0), 0) / totalT;
+
+    // Total gains & losses
+    const totalGains = wins.reduce((s, t) => s + (t.truePnl || 0), 0);
+    const totalLosses = Math.abs(losses.reduce((s, t) => s + (t.truePnl || 0), 0));
+
+    // EV per trade = (WR × avgWin) − (LR × avgLoss)
+    const evPerTrade = (wr * avgWinPnl) - (lr * avgLossPnl);
+
+    // Edge % = EV / avg stake (profit margin per dollar risked)
+    const edgePct = avgStake > 0 ? (evPerTrade / avgStake) * 100 : 0;
+
+    // Profit Factor = total gains / total losses
+    const profitFactor = totalLosses > 0 ? totalGains / totalLosses : totalGains > 0 ? Infinity : 0;
+
+    // Win/Loss ratio = avg win size / avg loss size
+    const winLossRatio = avgLossPnl > 0 ? avgWinPnl / avgLossPnl : avgWinPnl > 0 ? Infinity : 0;
+
+    // Kelly % = WR − (LR / winLossRatio)  (fraction of bankroll to bet)
+    const kellyPct = winLossRatio > 0 ? (wr - (lr / winLossRatio)) * 100 : 0;
+
+    // Break-even WR = 1 / (1 + winLossRatio)
+    const breakEvenWR = winLossRatio > 0 ? (1 / (1 + winLossRatio)) * 100 : 50;
+
+    const netPnl = totalGains - totalLosses;
+
+    // Night vs Day sub-edge
+    const nightTrades = trades.filter(t => t.hourET >= 0 && t.hourET < 7);
+    const dayTrades = trades.filter(t => t.hourET >= 7);
+    const calcSubEdge = (subset) => {
+      const sw = subset.filter(t => t.result === "win");
+      const sl = subset.filter(t => t.result === "loss");
+      const st = sw.length + sl.length;
+      if (st === 0) return null;
+      const swr = sw.length / st;
+      const slr = sl.length / st;
+      const savgW = sw.length > 0 ? sw.reduce((s, t) => s + (t.truePnl || 0), 0) / sw.length : 0;
+      const savgL = sl.length > 0 ? Math.abs(sl.reduce((s, t) => s + (t.truePnl || 0), 0) / sl.length) : 0;
+      const sev = (swr * savgW) - (slr * savgL);
+      const savgStake = subset.reduce((s, t) => s + (t.costBasis || 0), 0) / st;
+      const sedge = savgStake > 0 ? (sev / savgStake) * 100 : 0;
+      const stotalG = sw.reduce((s, t) => s + (t.truePnl || 0), 0);
+      const stotalL = Math.abs(sl.reduce((s, t) => s + (t.truePnl || 0), 0));
+      const spf = stotalL > 0 ? stotalG / stotalL : stotalG > 0 ? Infinity : 0;
+      return { wr: swr * 100, ev: sev, edgePct: sedge, pf: spf, trades: st, wins: sw.length, losses: sl.length, netPnl: stotalG - stotalL };
+    };
+
+    return {
+      wr: wr * 100, lr: lr * 100,
+      avgWinPnl, avgLossPnl, avgStake,
+      totalGains, totalLosses, netPnl,
+      evPerTrade, edgePct, profitFactor,
+      winLossRatio, kellyPct, breakEvenWR,
+      totalT, totalW, totalL,
+      night: calcSubEdge(nightTrades),
+      day: calcSubEdge(dayTrades),
+    };
+  }, [trades]);
+
   return (
     <div style={{fontFamily:"'JetBrains Mono',monospace",background:"#080818",minHeight:"100vh",color:"#ffffff"}}>
 
@@ -813,7 +902,7 @@ export default function App() {
                   <StatCard label="Best 4HR Block" value={bestBlock!==null?BLOCK4_LABELS[bestBlock]:"—"} sub={bestBlock!==null?`${pct(stats.byBlock[bestBlock].w,stats.byBlock[bestBlock].l)}% WR`:null} small/>
                 </div>
                 <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12,alignItems:"center"}}>
-                  {[["4hr","4HR BLOCKS"],["1hr","1HR CHUNKS"],["12hr","DAY/NIGHT"],["24hr","OVERALL"]].map(([k,l])=>(
+                  {[["4hr","4HR BLOCKS"],["1hr","1HR CHUNKS"],["12hr","DAY/NIGHT"],["24hr","OVERALL"],["edge","EDGE"]].map(([k,l])=>(
                     <button key={k} onClick={()=>setView(k)} style={S.seg(view===k)}>{l}</button>
                   ))}
                   <button onClick={()=>setShowRolling(r=>!r)} style={{...S.seg(showRolling),marginLeft:"auto"}}>7D ROLLING {showRolling?"▲":"▼"}</button>
@@ -878,6 +967,103 @@ export default function App() {
                         </div>
                       ))}
                     </>}
+                  </div>
+                )}
+
+                {/* ── EDGE / PROFITABILITY METRICS ── */}
+                {view==="edge"&&edgeMetrics&&(
+                  <div>
+                    {/* ── Hero metrics row ── */}
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,marginBottom:14}}>
+                      <StatCard label="Edge %" value={`${edgeMetrics.edgePct>=0?"+":""}${edgeMetrics.edgePct.toFixed(2)}%`}
+                        color={edgeMetrics.edgePct>=2?"#00ff9d":edgeMetrics.edgePct>=0?"#f0c040":"#ff4d6d"}
+                        sub="profit per $ risked"/>
+                      <StatCard label="EV / Trade" value={`${edgeMetrics.evPerTrade>=0?"+":""}$${edgeMetrics.evPerTrade.toFixed(2)}`}
+                        color={edgeMetrics.evPerTrade>=0?"#00ff9d":"#ff4d6d"}
+                        sub="expected $ per trade"/>
+                      <StatCard label="Profit Factor" value={edgeMetrics.profitFactor===Infinity?"∞":edgeMetrics.profitFactor.toFixed(2)+"x"}
+                        color={edgeMetrics.profitFactor>=1.5?"#00ff9d":edgeMetrics.profitFactor>=1?"#f0c040":"#ff4d6d"}
+                        sub="gains ÷ losses"/>
+                      <StatCard label="Win/Loss Ratio" value={edgeMetrics.winLossRatio===Infinity?"∞":edgeMetrics.winLossRatio.toFixed(2)}
+                        color={edgeMetrics.winLossRatio>=1.2?"#00ff9d":edgeMetrics.winLossRatio>=1?"#f0c040":"#ff4d6d"}
+                        sub="avg win $ ÷ avg loss $"/>
+                      <StatCard label="Kelly %" value={`${edgeMetrics.kellyPct.toFixed(1)}%`}
+                        color={edgeMetrics.kellyPct>=5?"#00ff9d":edgeMetrics.kellyPct>=1?"#f0c040":"#ff4d6d"}
+                        sub="optimal bet fraction"/>
+                      <StatCard label="Net PnL" value={`${edgeMetrics.netPnl>=0?"+":""}$${edgeMetrics.netPnl.toFixed(2)}`}
+                        color={edgeMetrics.netPnl>=0?"#00ff9d":"#ff4d6d"}
+                        sub={`${edgeMetrics.totalT} trades`}/>
+                    </div>
+
+                    {/* ── Detailed breakdown panel ── */}
+                    <div style={S.panel}>
+                      <div style={S.secT}>PROFIT EFFICIENCY BREAKDOWN</div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
+                        <div>
+                          <div style={{fontSize:11,letterSpacing:2,color:"#00ff9d",marginBottom:8}}>WINS ({edgeMetrics.totalW})</div>
+                          <div style={{fontSize:24,fontWeight:"bold",color:"#00ff9d",marginBottom:4}}>+${edgeMetrics.totalGains.toFixed(2)}</div>
+                          <div style={{fontSize:12,color:"#b0bcd0",marginBottom:2}}>Avg win: +${edgeMetrics.avgWinPnl.toFixed(2)}</div>
+                          <div style={{fontSize:12,color:"#b0bcd0"}}>Avg stake: ${edgeMetrics.avgStake.toFixed(2)}</div>
+                        </div>
+                        <div>
+                          <div style={{fontSize:11,letterSpacing:2,color:"#ff4d6d",marginBottom:8}}>LOSSES ({edgeMetrics.totalL})</div>
+                          <div style={{fontSize:24,fontWeight:"bold",color:"#ff4d6d",marginBottom:4}}>-${edgeMetrics.totalLosses.toFixed(2)}</div>
+                          <div style={{fontSize:12,color:"#b0bcd0",marginBottom:2}}>Avg loss: -${edgeMetrics.avgLossPnl.toFixed(2)}</div>
+                          <div style={{fontSize:12,color:"#b0bcd0"}}>Break-even WR: {edgeMetrics.breakEvenWR.toFixed(1)}%</div>
+                        </div>
+                      </div>
+                      {/* Visual edge indicator */}
+                      <div style={{marginTop:14,paddingTop:10,borderTop:"1px solid #1e2040"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
+                          <span style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>WR vs BREAK-EVEN</span>
+                          <span style={{fontSize:13,fontWeight:"bold",color:edgeMetrics.wr>edgeMetrics.breakEvenWR?"#00ff9d":"#ff4d6d"}}>
+                            {edgeMetrics.wr.toFixed(1)}% vs {edgeMetrics.breakEvenWR.toFixed(1)}% needed
+                            {edgeMetrics.wr>edgeMetrics.breakEvenWR?` → +${(edgeMetrics.wr-edgeMetrics.breakEvenWR).toFixed(1)}pt edge`:` → ${(edgeMetrics.wr-edgeMetrics.breakEvenWR).toFixed(1)}pt deficit`}
+                          </span>
+                        </div>
+                        <div style={{height:8,background:"#1a1a35",borderRadius:4,position:"relative"}}>
+                          <div style={{width:`${Math.min(edgeMetrics.wr,100)}%`,height:"100%",background:edgeMetrics.wr>edgeMetrics.breakEvenWR?"#00ff9d":"#ff4d6d",borderRadius:4,transition:"width 0.5s"}}/>
+                          <div style={{position:"absolute",top:-3,left:`${Math.min(edgeMetrics.breakEvenWR,100)}%`,width:2,height:14,background:"#ffffff",borderRadius:1}}/>
+                        </div>
+                        <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#505878",marginTop:3}}>
+                          <span>0%</span>
+                          <span style={{color:"#ffffff"}}>↑ break-even ({edgeMetrics.breakEvenWR.toFixed(0)}%)</span>
+                          <span>100%</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* ── Night vs Day Edge comparison ── */}
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
+                      {[{label:"NIGHT EDGE (12AM–7AM)",d:edgeMetrics.night},{label:"DAY EDGE (7AM–12AM)",d:edgeMetrics.day}].map(({label,d})=>{
+                        if(!d) return (
+                          <div key={label} style={{background:"#0d0d1f",border:"1px solid #1e2040",padding:"14px 16px"}}>
+                            <div style={{fontSize:11,letterSpacing:2,color:"#7080a0",marginBottom:6}}>{label}</div>
+                            <div style={{fontSize:14,color:"#505880"}}>No data</div>
+                          </div>
+                        );
+                        const edgeCol = d.edgePct>=2?"#00ff9d":d.edgePct>=0?"#f0c040":"#ff4d6d";
+                        return(
+                          <div key={label} style={{background:"#0d0d1f",border:"1px solid #1e2040",padding:"14px 16px"}}>
+                            <div style={{fontSize:11,letterSpacing:2,color:"#c0cce0",marginBottom:6}}>{label}</div>
+                            <div style={{fontSize:28,fontWeight:"bold",color:edgeCol}}>{d.edgePct>=0?"+":""}{d.edgePct.toFixed(2)}%</div>
+                            <div style={{fontSize:12,color:"#b0bcd0",marginTop:4}}>EV {d.ev>=0?"+":""}${d.ev.toFixed(2)}/trade · PF {d.pf===Infinity?"∞":d.pf.toFixed(2)}x</div>
+                            <div style={{fontSize:12,color:"#b0bcd0"}}>{d.wins}W/{d.losses}L · {d.wr.toFixed(1)}% WR · Net {d.netPnl>=0?"+":""}${d.netPnl.toFixed(2)}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* ── Formula reference ── */}
+                    <div style={{background:"#0a0a1a",border:"1px solid #1e2040",padding:"10px 14px",borderRadius:2,fontSize:11,color:"#505878",letterSpacing:0.5,lineHeight:1.8}}>
+                      <span style={{color:"#7080a0"}}>FORMULAS:</span>{" "}
+                      Edge% = EV ÷ avg stake · EV = (WR × avgWin) − (LR × avgLoss) · Profit Factor = total gains ÷ total losses · Kelly% = WR − (LR ÷ W:L ratio) · Break-even WR = 1 ÷ (1 + W:L ratio)
+                    </div>
+                  </div>
+                )}
+                {view==="edge"&&!edgeMetrics&&(
+                  <div style={{textAlign:"center",padding:"40px 0",color:"#505880",fontSize:13,letterSpacing:2}}>
+                    FETCH WALLET DATA TO VIEW EDGE METRICS
                   </div>
                 )}
               </div>
