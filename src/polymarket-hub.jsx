@@ -22,6 +22,34 @@ function wrColor(n) { if(n===null)return"#505878"; return n>=60?"#00ff9d":n>=50?
 function getBlock4(h) { return Math.floor(h/4); }
 function fmtMoney(n) { return (n>=0?"+":"")+`$${Math.abs(n).toFixed(2)}`; }
 
+// ─── Win/Loss classification from curPrice ───────────────────────────────────
+// curPrice === 1 → trader's outcome resolved YES (win)
+// curPrice === 0 → trader's outcome resolved NO (loss)
+// Mid-price on closed positions = ambiguous, skip or classify conservatively
+function classifyResult(curPrice) {
+  const cp = parseFloat(curPrice);
+  if (isNaN(cp)) return null; // can't classify
+  if (cp >= 0.99) return "win";
+  if (cp <= 0.01) return "loss";
+  return null; // ambiguous — not clearly resolved
+}
+
+// ─── True per-trade PnL from position fields ─────────────────────────────────
+// costBasis = totalBought (shares) × avgPrice (price per share) = dollars spent
+// redemption = totalBought × curPrice (1 for win, 0 for loss)
+// truePnL = totalBought × (curPrice - avgPrice)
+function calcTruePnl(totalBought, avgPrice, curPrice) {
+  const shares = parseFloat(totalBought) || 0;
+  const avg = parseFloat(avgPrice) || 0;
+  const cur = parseFloat(curPrice) || 0;
+  return shares * (cur - avg);
+}
+
+// ─── Cost basis in dollars (totalBought is shares, not dollars) ──────────────
+function calcCostBasis(totalBought, avgPrice) {
+  return (parseFloat(totalBought) || 0) * (parseFloat(avgPrice) || 0);
+}
+
 // ─── Normalise equity to 0-100 trade-progress X axis ────────────────────────
 function normalizeEquity(equity) {
   if (!equity || equity.length < 2) return [];
@@ -64,8 +92,9 @@ function calcStake(trade, concurrentCount, config, currentBalance) {
   if (sizingMode === "fixed") {
     stake = parseFloat(fixedAmt) || 10;
   } else if (sizingMode === "percentage") {
-    const leaderBought = trade.totalBought || 0;
-    stake = leaderBought * (parseFloat(pct) || 50) / 100;
+    // FIX: use costBasis (dollars spent) not totalBought (shares)
+    const leaderDollars = trade.costBasis || calcCostBasis(trade.totalBought, trade.avgPrice);
+    stake = leaderDollars * (parseFloat(pct) || 50) / 100;
     if (stake <= 0) stake = 5;
   } else if (sizingMode === "portfolio") {
     const rawPortfolio = (leaderPortfolioData && leaderPortfolioData.map.get(trade.id)) || 1;
@@ -73,7 +102,9 @@ function calcStake(trade, concurrentCount, config, currentBalance) {
     const actualLeaderBalance = parseFloat(leaderBalance) || finalPortfolio;
     const scaleFactor = actualLeaderBalance / finalPortfolio;
     const scaledPortfolio = rawPortfolio * scaleFactor;
-    const fraction = (trade.totalBought || 0) / scaledPortfolio;
+    // FIX: use costBasis (dollars) not totalBought (shares)
+    const leaderDollars = trade.costBasis || calcCostBasis(trade.totalBought, trade.avgPrice);
+    const fraction = leaderDollars / scaledPortfolio;
     stake = fraction * (parseFloat(portfolioBalance) || currentBalance) * (multiplier || 1);
     if (stake <= 0) stake = 5;
   }
@@ -322,6 +353,9 @@ export default function App() {
   };
 
   // ── Fetch WR ────────────────────────────────────────────────────────────────
+  // FIX: Win/loss now classified by curPrice (1=win, 0=loss) instead of realizedPnl sign
+  // FIX: truePnl calculated as totalBought × (curPrice − avgPrice)
+  // FIX: costBasis calculated as totalBought × avgPrice (dollars, not shares)
   const fetchWR = useCallback(async () => {
     const address = walletAddr.trim();
     if (!address.startsWith("0x")) { setFetchStatus("error"); setFetchMsg("Invalid address"); return; }
@@ -339,21 +373,56 @@ export default function App() {
         if(data.length<50) break;
         offset+=50;
       }
-      const classified=[]; let skipped=0;
+      const classified=[]; let skipped=0; let ambiguous=0;
       for(const t of all) {
-        const p=parseFloat(t.realizedPnl);
-        if(p===0){skipped++;continue;}
+        const curPrice = parseFloat(t.curPrice);
+        const avgPrice = parseFloat(t.avgPrice || 0.5);
+        const totalBought = parseFloat(t.totalBought || 0);
+
+        // FIX #1: classify by curPrice, not realizedPnl
+        const result = classifyResult(curPrice);
+        if (result === null) {
+          // Ambiguous mid-price on a "closed" position — could be API lag or unresolved
+          // Fallback: use realizedPnl sign if available, otherwise skip
+          const rawPnl = parseFloat(t.realizedPnl);
+          if (rawPnl === 0) { skipped++; continue; }
+          // If curPrice is NaN or mid-range but realizedPnl exists, use old logic as fallback
+          const fallbackResult = rawPnl > 0 ? "win" : "loss";
+          classified.push({
+            id: crypto.randomUUID(),
+            dateET: tsToETDate(t.timestamp),
+            hourET: tsToETHour(t.timestamp),
+            result: fallbackResult,
+            avgPrice,
+            size: parseFloat(t.size || 0),
+            realizedPnl: rawPnl,
+            truePnl: calcTruePnl(totalBought, avgPrice, curPrice),
+            costBasis: calcCostBasis(totalBought, avgPrice),
+            totalBought,
+            curPrice,
+            timestamp: t.timestamp,
+            title: t.title || "",
+            classifiedBy: "realizedPnl-fallback",
+          });
+          ambiguous++;
+          continue;
+        }
+
         classified.push({
-          id:crypto.randomUUID(),
-          dateET:tsToETDate(t.timestamp),
-          hourET:tsToETHour(t.timestamp),
-          result:p>0?"win":"loss",
-          avgPrice:parseFloat(t.avgPrice||0.5),
-          size:parseFloat(t.size||0),
-          realizedPnl:p,
-          totalBought:parseFloat(t.totalBought||0),
-          timestamp:t.timestamp,
-          title:t.title||""
+          id: crypto.randomUUID(),
+          dateET: tsToETDate(t.timestamp),
+          hourET: tsToETHour(t.timestamp),
+          result,
+          avgPrice,
+          size: parseFloat(t.size || 0),
+          realizedPnl: parseFloat(t.realizedPnl || 0),
+          truePnl: calcTruePnl(totalBought, avgPrice, curPrice),
+          costBasis: calcCostBasis(totalBought, avgPrice),
+          totalBought,
+          curPrice,
+          timestamp: t.timestamp,
+          title: t.title || "",
+          classifiedBy: "curPrice",
         });
       }
 
@@ -366,25 +435,32 @@ export default function App() {
         if (Array.isArray(openData)) {
           for (const op of openData) {
             const cur = parseFloat(op.curPrice || 0);
-            // Expired/resolved: price converged to near 0 (NO won) or near 1 (YES won)
+            const avg = parseFloat(op.avgPrice || 0.5);
+            const totalB = parseFloat(op.totalBought || 0);
+            // Expired/resolved: price converged to near 0 (loss) or near 1 (win)
             const isExpiredWin  = cur >= 0.99;
             const isExpiredLoss = cur <= 0.01;
             // Ambiguous mid-price on what appears stale — conservative = loss
             const isAmbiguous   = !isExpiredWin && !isExpiredLoss && cur > 0;
             if (isExpiredWin || isExpiredLoss || isAmbiguous) {
               const result = isExpiredWin ? "win" : "loss";
+              const effectiveCur = isExpiredWin ? 1 : 0;
               classified.push({
                 id: crypto.randomUUID(),
                 dateET: tsToETDate(op.timestamp || Math.floor(Date.now()/1000)),
                 hourET: tsToETHour(op.timestamp || Math.floor(Date.now()/1000)),
                 result,
-                avgPrice: parseFloat(op.avgPrice || 0.5),
+                avgPrice: avg,
                 size: parseFloat(op.size || 0),
                 realizedPnl: 0,
-                totalBought: parseFloat(op.totalBought || 0),
+                truePnl: calcTruePnl(totalB, avg, effectiveCur),
+                costBasis: calcCostBasis(totalB, avg),
+                totalBought: totalB,
+                curPrice: cur,
                 timestamp: op.timestamp || Math.floor(Date.now()/1000),
                 title: op.title || "",
                 expired: true,
+                classifiedBy: "expired-curPrice",
               });
               expiredCount++;
             }
@@ -395,8 +471,9 @@ export default function App() {
       setTrades(classified);
       setWalletLabel(address.slice(0,6)+"…"+address.slice(-4));
       setFetchStatus("success");
-      const expiredNote = expiredCount > 0 ? ` · ⚠ ${expiredCount} expired positions included as losses` : "";
-      setFetchMsg(`Loaded ${classified.length - expiredCount} trades (${skipped} zero-PnL skipped)${expiredNote} — auto-saving...`);
+      const expiredNote = expiredCount > 0 ? ` · ⚠ ${expiredCount} expired positions injected` : "";
+      const ambiguousNote = ambiguous > 0 ? ` · ${ambiguous} classified by PnL fallback` : "";
+      setFetchMsg(`Loaded ${classified.length - expiredCount} trades (${skipped} skipped)${expiredNote}${ambiguousNote} — auto-saving...`);
     } catch(err) {
       if(err.message.includes("fetch")||err.message.includes("CORS")||err.message.includes("NetworkError")) {
         setFetchStatus("cors"); setFetchMsg("CORS blocked — use Bulk Import in LOG tab");
@@ -407,6 +484,7 @@ export default function App() {
   }, [walletAddr]);
 
   // ── Fetch PnL ───────────────────────────────────────────────────────────────
+  // FIX: PnL tracker now uses truePnl = totalBought × (curPrice − avgPrice)
   const fetchPnL = useCallback(async () => {
     const address=walletAddr.trim();
     if(!address.startsWith("0x")) return;
@@ -484,19 +562,28 @@ export default function App() {
   }, [trades]);
 
   // ── PnL Stats ────────────────────────────────────────────────────────────────
+  // FIX: Use truePnl formula instead of raw realizedPnl
   const pnlStats=useMemo(()=>{
     let realized=0;
     const byBlock=Array.from({length:6},()=>({pnl:0,count:0,w:0,l:0}));
     const night={pnl:0,w:0,l:0},day={pnl:0,w:0,l:0};
     for(const p of pnlData){
-      const pnl=parseFloat(p.realizedPnl||0);realized+=pnl;
+      // FIX #3: compute true PnL from fields instead of using raw realizedPnl
+      const totalBought = parseFloat(p.totalBought || 0);
+      const avgPrice = parseFloat(p.avgPrice || 0);
+      const curPrice = parseFloat(p.curPrice || 0);
+      const pnl = calcTruePnl(totalBought, avgPrice, curPrice);
+      realized+=pnl;
       const hour=tsToETHour(p.timestamp),b=getBlock4(hour);
       byBlock[b].pnl+=pnl;byBlock[b].count+=1;byBlock[b].w+=pnl>0?1:0;byBlock[b].l+=pnl<0?1:0;
       if(hour>=0&&hour<7){night.pnl+=pnl;night.w+=pnl>0?1:0;night.l+=pnl<0?1:0;}
       else{day.pnl+=pnl;day.w+=pnl>0?1:0;day.l+=pnl<0?1:0;}
     }
     let unrealized=0;
-    for(const p of openPos){const size=parseFloat(p.size||0),avg=parseFloat(p.avgPrice||0),cur=parseFloat(p.curPrice||0);if(size>0&&avg>0&&cur>0)unrealized+=size*(cur-avg);}
+    for(const p of openPos){
+      const size=parseFloat(p.size||0),avg=parseFloat(p.avgPrice||0),cur=parseFloat(p.curPrice||0);
+      if(size>0&&avg>0&&cur>0) unrealized+=size*(cur-avg);
+    }
     return{realized,unrealized,total:realized+unrealized,byBlock,night,day};
   },[pnlData,openPos]);
 
@@ -507,8 +594,9 @@ export default function App() {
     const map = new Map();
     let finalValue = 1;
     for (const t of sorted) {
-      cumulativeBought += (t.totalBought || 0);
-      const portfolioVal = Math.max(cumulativeBought - (t.realizedPnl < 0 ? Math.abs(t.realizedPnl) : 0), 1);
+      // FIX: use costBasis (dollars) for portfolio reconstruction
+      cumulativeBought += (t.costBasis || calcCostBasis(t.totalBought, t.avgPrice));
+      const portfolioVal = Math.max(cumulativeBought - (t.truePnl < 0 ? Math.abs(t.truePnl) : 0), 1);
       map.set(t.id, portfolioVal);
       finalValue = portfolioVal;
     }
@@ -585,7 +673,8 @@ export default function App() {
       if(isNaN(hour)||hour<0||hour>23){setBulkError(`Bad hour: "${line}"`);return;}
       const result=parts[2].toLowerCase().startsWith("w")?"win":parts[2].toLowerCase().startsWith("l")?"loss":null;
       if(!result){setBulkError(`Bad result: "${line}"`);return;}
-      parsed.push({id:crypto.randomUUID(),dateET:parts[0],hourET:hour,result,avgPrice:parts.length>=4?parseFloat(parts[3])||0.5:0.5,size:parts.length>=5?parseFloat(parts[4])||0:0,realizedPnl:0});
+      const avgP = parts.length>=4?parseFloat(parts[3])||0.5:0.5;
+      parsed.push({id:crypto.randomUUID(),dateET:parts[0],hourET:hour,result,avgPrice:avgP,size:parts.length>=5?parseFloat(parts[4])||0:0,realizedPnl:0,truePnl:0,costBasis:0,totalBought:0,curPrice:result==="win"?1:0});
     }
     setTrades(t=>[...t,...parsed]);
     setBulkText("");
@@ -633,6 +722,9 @@ export default function App() {
       </div>
     );
   };
+
+  // ── Computed: total truePnl from loaded trades (WR tab summary) ─────────────
+  const totalTruePnl = useMemo(() => trades.reduce((sum, t) => sum + (t.truePnl || 0), 0), [trades]);
 
   return (
     <div style={{fontFamily:"'JetBrains Mono',monospace",background:"#080818",minHeight:"100vh",color:"#ffffff"}}>
@@ -696,6 +788,22 @@ export default function App() {
               <div>
                 <NightAlert nightNum={pctNum(stats.night.w,stats.night.l)} dayNum={pctNum(stats.day.w,stats.day.l)}/>
                 {expiredTradeCount>0&&<div style={{background:"#1a0800",border:"1px solid #ff9d00",padding:"6px 12px",fontSize:12,color:"#ff9d00",letterSpacing:1,marginBottom:12,borderRadius:2}}>⚠ {expiredTradeCount} expired/unclaimed position{expiredTradeCount!==1?"s":""} included as losses — WR may be lower than wallet claims</div>}
+
+                {/* ── Classification method info banner ── */}
+                {trades.length>0&&(()=>{
+                  const byCurPrice = trades.filter(t=>t.classifiedBy==="curPrice").length;
+                  const byFallback = trades.filter(t=>t.classifiedBy==="realizedPnl-fallback").length;
+                  const byExpired = trades.filter(t=>t.classifiedBy==="expired-curPrice").length;
+                  return (
+                    <div style={{background:"#0d0d1f",border:"1px solid #1e2040",padding:"6px 12px",fontSize:11,color:"#7080a0",letterSpacing:1,marginBottom:12,borderRadius:2,display:"flex",gap:12,flexWrap:"wrap"}}>
+                      <span>Classification: <span style={{color:"#00ff9d"}}>{byCurPrice} curPrice</span></span>
+                      {byFallback>0&&<span style={{color:"#f0c040"}}>{byFallback} PnL fallback</span>}
+                      {byExpired>0&&<span style={{color:"#ff9d00"}}>{byExpired} expired</span>}
+                      {totalTruePnl!==0&&<span>Net PnL: <span style={{color:totalTruePnl>=0?"#00ff9d":"#ff4d6d"}}>{totalTruePnl>=0?"+":""}${totalTruePnl.toFixed(2)}</span></span>}
+                    </div>
+                  );
+                })()}
+
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:8,marginBottom:14}}>
                   <StatCard label="Total Trades" value={stats.total.w+stats.total.l} sub={`${stats.total.w}W / ${stats.total.l}L`}/>
                   <StatCard label="Overall WR" value={pct(stats.total.w,stats.total.l)?`${pct(stats.total.w,stats.total.l)}%`:"—"} color={wrColor(pctNum(stats.total.w,stats.total.l))}/>
@@ -799,7 +907,7 @@ export default function App() {
                         <option value="loss">LOSS</option>
                       </select>
                     </div>
-                    <button onClick={()=>{const n=Array.from({length:manualCount},()=>({id:crypto.randomUUID(),dateET:manualDate,hourET:manualHour,result:manualResult,avgPrice:0.5,size:0,realizedPnl:0}));setTrades(t=>[...t,...n]);}} style={S.btn("primary",false)}>ADD</button>
+                    <button onClick={()=>{const n=Array.from({length:manualCount},()=>({id:crypto.randomUUID(),dateET:manualDate,hourET:manualHour,result:manualResult,avgPrice:0.5,size:0,realizedPnl:0,truePnl:0,costBasis:0,totalBought:0,curPrice:manualResult==="win"?1:0}));setTrades(t=>[...t,...n]);}} style={S.btn("primary",false)}>ADD</button>
                   </div>
                 </div>
                 <div style={S.panel}>
@@ -824,11 +932,13 @@ export default function App() {
                 {trades.length===0&&<div style={{color:"#505880",fontSize:14,padding:"16px 0"}}>No trades loaded.</div>}
                 <div style={{maxHeight:420,overflowY:"auto"}}>
                   {[...trades].sort((a,b)=>b.dateET.localeCompare(a.dateET)||b.hourET-a.hourET).map(t=>(
-                    <div key={t.id} style={{display:"flex",gap:12,padding:"4px 0",borderBottom:"1px solid #131330",fontSize:13,alignItems:"center"}}>
+                    <div key={t.id} style={{display:"flex",gap:12,padding:"4px 0",borderBottom:"1px solid #131330",fontSize:13,alignItems:"center",flexWrap:"wrap"}}>
                       <span style={{color:"#7080a0"}}>{t.dateET}</span>
                       <span style={{color:"#ffffff",minWidth:45}}>{HOUR_LABELS[t.hourET]}</span>
                       <span style={{color:t.result==="win"?"#00ff9d":"#ff4d6d"}}>{t.result==="win"?"WIN":"LOSS"}</span>
                       <span style={{color:"#505880",fontSize:12}}>{t.avgPrice>0?`@${t.avgPrice.toFixed(3)}`:""}</span>
+                      {t.truePnl!==undefined&&t.truePnl!==0&&<span style={{color:t.truePnl>=0?"#00ff9d":"#ff4d6d",fontSize:11}}>{t.truePnl>=0?"+":""}${t.truePnl.toFixed(2)}</span>}
+                      {t.classifiedBy&&t.classifiedBy!=="curPrice"&&<span style={{color:"#f0c040",fontSize:10,letterSpacing:1}}>{t.classifiedBy==="realizedPnl-fallback"?"FALLBACK":"EXPIRED"}</span>}
                       {t.expired&&<span style={{color:"#ff9d00",fontSize:10,letterSpacing:1}}>EXPIRED</span>}
                       <button onClick={()=>setTrades(tr=>tr.filter(x=>x.id!==t.id))} style={{color:"#505880",background:"none",border:"none",cursor:"pointer",fontSize:12,marginLeft:"auto"}}>✕</button>
                     </div>
@@ -864,11 +974,12 @@ export default function App() {
               </button>
             </div>
             {pnlStatus!=="idle"&&<div style={{marginTop:8,fontSize:12,color:statusColor[pnlStatus]}}>{pnlMsg}</div>}
+            {pnlStatus==="success"&&<div style={{marginTop:4,fontSize:10,color:"#505878",letterSpacing:1}}>PnL = totalBought × (curPrice − avgPrice) per position</div>}
           </div>
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,marginBottom:14}}>
-            <StatCard label="Realized PnL" value={`${pnlStats.realized>=0?"+":""}$${pnlStats.realized.toFixed(4)}`} color={pnlStats.realized>=0?"#00ff9d":"#ff4d6d"}/>
-            <StatCard label="Unrealized PnL" value={`${pnlStats.unrealized>=0?"+":""}$${pnlStats.unrealized.toFixed(4)}`} color={pnlStats.unrealized>=0?"#00ff9d":"#ff4d6d"}/>
-            <StatCard label="Total PnL" value={`${pnlStats.total>=0?"+":""}$${pnlStats.total.toFixed(4)}`} color={pnlStats.total>=0?"#00ff9d":"#ff4d6d"}/>
+            <StatCard label="Realized PnL" value={`${pnlStats.realized>=0?"+":""}$${pnlStats.realized.toFixed(2)}`} color={pnlStats.realized>=0?"#00ff9d":"#ff4d6d"}/>
+            <StatCard label="Unrealized PnL" value={`${pnlStats.unrealized>=0?"+":""}$${pnlStats.unrealized.toFixed(2)}`} color={pnlStats.unrealized>=0?"#00ff9d":"#ff4d6d"}/>
+            <StatCard label="Total PnL" value={`${pnlStats.total>=0?"+":""}$${pnlStats.total.toFixed(2)}`} color={pnlStats.total>=0?"#00ff9d":"#ff4d6d"}/>
             <StatCard label="Closed Positions" value={pnlData.length} sub={`in last ${pnlHours}h`}/>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
@@ -877,7 +988,7 @@ export default function App() {
               return(
                 <div key={label} style={{background:"#0d0d1f",border:"1px solid #1e2040",padding:"14px 16px"}}>
                   <div style={{fontSize:11,letterSpacing:2,color:"#c0cce0",marginBottom:6}}>{label}</div>
-                  <div style={{fontSize:26,fontWeight:"bold",color:col}}>{d.pnl>=0?"+":""}${d.pnl.toFixed(4)}</div>
+                  <div style={{fontSize:26,fontWeight:"bold",color:col}}>{d.pnl>=0?"+":""}${d.pnl.toFixed(2)}</div>
                   <div style={{fontSize:12,color:"#b0bcd0",marginTop:4}}>{total>0?`${d.w}W / ${d.l}L · ${wr}% WR`:"No data"}</div>
                 </div>
               );
@@ -890,7 +1001,7 @@ export default function App() {
               return(
                 <div key={b} style={{...S.row(false),padding:"6px 0"}}>
                   <div style={{...S.lbl(false),minWidth:100}}>{label}</div>
-                  <span style={{color:col,fontWeight:"bold",minWidth:90,fontSize:14}}>{d.pnl>=0?"+":""}${d.pnl.toFixed(4)}</span>
+                  <span style={{color:col,fontWeight:"bold",minWidth:90,fontSize:14}}>{d.pnl>=0?"+":""}${d.pnl.toFixed(2)}</span>
                   <span style={{fontSize:12,color:"#b0bcd0"}}>{d.count>0?`${d.w}W/${d.l}L ${wr}% · ${d.count} trades`:"—"}</span>
                 </div>
               );
@@ -909,7 +1020,7 @@ export default function App() {
                       <span>{size.toFixed(2)} {p.outcome}</span>
                       <span>avg {avg.toFixed(3)}</span>
                       <span>cur {cur.toFixed(3)}</span>
-                      {unreal!==null&&<span style={{color:col,fontWeight:"bold"}}>{unreal>=0?"+":""}${unreal.toFixed(4)}</span>}
+                      {unreal!==null&&<span style={{color:col,fontWeight:"bold"}}>{unreal>=0?"+":""}${unreal.toFixed(2)}</span>}
                     </div>
                   </div>
                 );
@@ -988,9 +1099,9 @@ export default function App() {
                     <div style={{display:"flex",flexDirection:"column",gap:6}}>
                       <div style={{display:"flex",alignItems:"center",gap:6}}>
                         <input type="number" value={btPct} onChange={e=>setBtPct(e.target.value)} min="1" max="500" style={{...S.inp,width:65}}/>
-                        <span style={{fontSize:11,color:"#b0bcd0"}}>% of leader's totalBought</span>
+                        <span style={{fontSize:11,color:"#b0bcd0"}}>% of leader's cost basis ($)</span>
                       </div>
-                      <div style={{fontSize:11,color:"#7080a0"}}>leader 100 USDC → you stake {btPct} USDC</div>
+                      <div style={{fontSize:11,color:"#7080a0"}}>leader $100 cost → you stake ${btPct}</div>
                     </div>
                   )}
                   {btSizingMode==="portfolio"&&(
@@ -1018,7 +1129,7 @@ export default function App() {
                             min="0.01" step="0.01" style={{...S.inp,width:55,marginLeft:2}}/>
                         </div>
                       </div>
-                      <div style={{fontSize:10,color:"#7080a0"}}>stake = (leader trade / leader portfolio) × my bal × mult</div>
+                      <div style={{fontSize:10,color:"#7080a0"}}>stake = (leader cost $ / leader portfolio) × my bal × mult</div>
                     </div>
                   )}
                 </div>
@@ -1127,7 +1238,7 @@ export default function App() {
               {/* ── COMPARE ALL RESULTS ── */}
               {btMode==="all"&&allBlocksResults&&(
                 <div style={S.panel}>
-                  <div style={S.secT}>ALL BLOCKS COMPARISON — ${parseFloat(btStartBal).toFixed(0)} START · {btSizingMode==="fixed"?`$${btFixedAmt}/trade`:btSizingMode==="percentage"?`${btPct}% of leader buy`:"portfolio-weighted"}</div>
+                  <div style={S.secT}>ALL BLOCKS COMPARISON — ${parseFloat(btStartBal).toFixed(0)} START · {btSizingMode==="fixed"?`$${btFixedAmt}/trade`:btSizingMode==="percentage"?`${btPct}% of leader cost`:"portfolio-weighted"}</div>
                   <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:8}}>
                     {allBlocksResults.map(({label,result,tradeCount})=>{
                       if(!result||tradeCount===0) return(
