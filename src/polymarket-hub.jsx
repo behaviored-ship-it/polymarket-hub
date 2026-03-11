@@ -426,56 +426,66 @@ export default function App() {
         });
       }
 
-      // ── Fetch open positions and inject expired ones as synthetic closed trades ──
+      // ── Fetch ALL open positions (paginated) and inject expired ones ──
       let expiredCount = 0;
+      let openKept = 0; // truly live positions skipped
       try {
-        const openUrl = `${PROXY_BASE}?wallet=${address.toLowerCase()}&type=open`;
-        const openRes = await fetch(openUrl);
-        const openData = await openRes.json();
-        if (Array.isArray(openData)) {
-          for (const op of openData) {
-            const cur = parseFloat(op.curPrice || 0);
-            const avg = parseFloat(op.avgPrice || 0.5);
-            const totalB = parseFloat(op.totalBought || 0);
-            // Expired/resolved: price converged to near 0 (loss) or near 1 (win)
-            const isExpiredWin  = cur >= 0.90;
-            const isExpiredLoss = cur <= 0.10;
-            // Mid-price: only treat as expired loss if the market date in the title has passed
-            // Title format: "Bitcoin Up or Down - March 9, 12:25AM-12:30AM ET"
-            let titleExpired = false;
-            const titleStr = op.title || "";
-            const dateMatch = titleStr.match(/(\w+ \d+),\s*[\d:]+[AP]M/i);
-            if (dateMatch) {
-              try {
-                const parsedDate = new Date(`${dateMatch[1]}, 2026`);
-                const now = new Date();
-                // If the market date is > 1 hour in the past, it's expired
-                titleExpired = !isNaN(parsedDate) && (now - parsedDate) > 3600000;
-              } catch(_) {}
-            }
-            const isAmbiguous = !isExpiredWin && !isExpiredLoss && cur > 0 && titleExpired;
-            if (isExpiredWin || isExpiredLoss || isAmbiguous) {
-              const result = isExpiredWin ? "win" : "loss";
-              const effectiveCur = isExpiredWin ? 1 : 0;
-              classified.push({
-                id: crypto.randomUUID(),
-                dateET: tsToETDate(op.timestamp || Math.floor(Date.now()/1000)),
-                hourET: tsToETHour(op.timestamp || Math.floor(Date.now()/1000)),
-                result,
-                avgPrice: avg,
-                size: parseFloat(op.size || 0),
-                realizedPnl: 0,
-                truePnl: calcTruePnl(totalB, avg, effectiveCur),
-                costBasis: calcCostBasis(totalB, avg),
-                totalBought: totalB,
-                curPrice: cur,
-                timestamp: op.timestamp || Math.floor(Date.now()/1000),
-                title: op.title || "",
-                expired: true,
-                classifiedBy: "expired-curPrice",
-              });
-              expiredCount++;
-            }
+        let allOpen = [], openOffset = 0;
+        while (true) {
+          const openUrl = `${PROXY_BASE}?wallet=${address.toLowerCase()}&type=open&offset=${openOffset}`;
+          setFetchMsg(`Loading open positions... ${allOpen.length} so far`);
+          const openRes = await fetch(openUrl);
+          const openPage = await openRes.json();
+          if (!Array.isArray(openPage) || openPage.length === 0) break;
+          allOpen = allOpen.concat(openPage);
+          if (openPage.length < 50) break;
+          openOffset += 50;
+        }
+        setFetchMsg(`Processing ${allOpen.length} open positions...`);
+        for (const op of allOpen) {
+          const cur = parseFloat(op.curPrice || 0);
+          const avg = parseFloat(op.avgPrice || 0.5);
+          const totalB = parseFloat(op.totalBought || 0);
+          // Expired/resolved: price converged to near 0 (loss) or near 1 (win)
+          const isExpiredWin  = cur >= 0.90;
+          const isExpiredLoss = cur <= 0.10;
+          // Mid-price: only treat as expired loss if the market date in the title has passed
+          // Title format: "Bitcoin Up or Down - March 9, 12:25AM-12:30AM ET"
+          let titleExpired = false;
+          const titleStr = op.title || "";
+          const dateMatch = titleStr.match(/(\w+ \d+),\s*[\d:]+[AP]M/i);
+          if (dateMatch) {
+            try {
+              const parsedDate = new Date(`${dateMatch[1]}, 2026`);
+              const now = new Date();
+              // If the market date is > 1 hour in the past, it's expired
+              titleExpired = !isNaN(parsedDate) && (now - parsedDate) > 3600000;
+            } catch(_) {}
+          }
+          const isAmbiguous = !isExpiredWin && !isExpiredLoss && cur > 0 && titleExpired;
+          if (isExpiredWin || isExpiredLoss || isAmbiguous) {
+            const result = isExpiredWin ? "win" : "loss";
+            const effectiveCur = isExpiredWin ? 1 : 0;
+            classified.push({
+              id: crypto.randomUUID(),
+              dateET: tsToETDate(op.timestamp || Math.floor(Date.now()/1000)),
+              hourET: tsToETHour(op.timestamp || Math.floor(Date.now()/1000)),
+              result,
+              avgPrice: avg,
+              size: parseFloat(op.size || 0),
+              realizedPnl: 0,
+              truePnl: calcTruePnl(totalB, avg, effectiveCur),
+              costBasis: calcCostBasis(totalB, avg),
+              totalBought: totalB,
+              curPrice: cur,
+              timestamp: op.timestamp || Math.floor(Date.now()/1000),
+              title: op.title || "",
+              expired: true,
+              classifiedBy: "expired-curPrice",
+            });
+            expiredCount++;
+          } else {
+            openKept++;
           }
         }
       } catch(_) {}
@@ -484,8 +494,9 @@ export default function App() {
       setWalletLabel(address.slice(0,6)+"…"+address.slice(-4));
       setFetchStatus("success");
       const expiredNote = expiredCount > 0 ? ` · ⚠ ${expiredCount} expired positions injected` : "";
-      const ambiguousNote = ambiguous > 0 ? ` · ${ambiguous} classified by PnL fallback` : "";
-      setFetchMsg(`Loaded ${classified.length - expiredCount} trades (${skipped} skipped)${expiredNote}${ambiguousNote} — auto-saving...`);
+      const ambiguousNote = ambiguous > 0 ? ` · ${ambiguous} PnL fallback` : "";
+      const openNote = openKept > 0 ? ` · ${openKept} live positions skipped` : "";
+      setFetchMsg(`Loaded ${classified.length} total (${classified.length - expiredCount} closed + ${expiredCount} expired${openNote}${ambiguousNote}) — auto-saving...`);
     } catch(err) {
       if(err.message.includes("fetch")||err.message.includes("CORS")||err.message.includes("NetworkError")) {
         setFetchStatus("cors"); setFetchMsg("CORS blocked — use Bulk Import in LOG tab");
