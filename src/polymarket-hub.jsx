@@ -362,16 +362,20 @@ export default function App() {
     setFetchStatus("loading"); setFetchMsg("Fetching...");
     try {
       let all=[], offset=0;
+      const seenAssets = new Set(); // deduplicate by asset ID
       while(true) {
         const url=`${PROXY_BASE}?wallet=${address.toLowerCase()}&offset=${offset}&type=closed`;
         const res=await fetch(url);
         if(!res.ok) throw new Error(`API ${res.status}`);
         const data=await res.json();
         if(!Array.isArray(data)||data.length===0) break;
-        all=all.concat(data);
-        setFetchMsg(`Loading... ${all.length} positions`);
-        if(data.length<50) break;
-        offset+=50;
+        for (const d of data) {
+          const key = d.asset || d.conditionId || JSON.stringify({t:d.title,o:d.outcome,ts:d.timestamp});
+          if (!seenAssets.has(key)) { seenAssets.add(key); all.push(d); }
+        }
+        setFetchMsg(`Loading closed... ${all.length} unique positions`);
+        if(data.length<100) break; // API returns 100 per page
+        offset+=100;
       }
       const classified=[]; let skipped=0; let ambiguous=0;
       for(const t of all) {
@@ -431,15 +435,24 @@ export default function App() {
       let openKept = 0; // truly live positions skipped
       try {
         let allOpen = [], openOffset = 0;
+        const seenOpenAssets = new Set();
         while (true) {
           const openUrl = `${PROXY_BASE}?wallet=${address.toLowerCase()}&type=open&offset=${openOffset}`;
-          setFetchMsg(`Loading open positions... ${allOpen.length} so far`);
+          setFetchMsg(`Loading open positions... ${allOpen.length} unique so far`);
           const openRes = await fetch(openUrl);
+          if (!openRes.ok) break; // API returns error at offset >= 1000
           const openPage = await openRes.json();
           if (!Array.isArray(openPage) || openPage.length === 0) break;
-          allOpen = allOpen.concat(openPage);
-          if (openPage.length < 50) break;
-          openOffset += 50;
+          for (const d of openPage) {
+            const key = d.asset || d.conditionId || JSON.stringify({t:d.title,o:d.outcome});
+            if (!seenOpenAssets.has(key)) { seenOpenAssets.add(key); allOpen.push(d); }
+          }
+          if (openPage.length < 100) break; // API returns 100 per page
+          openOffset += 100;
+          if (openOffset >= 1000) {
+            setFetchMsg(`Open positions capped at offset 1000 (${allOpen.length} fetched) — API limit`);
+            break;
+          }
         }
         setFetchMsg(`Processing ${allOpen.length} open positions...`);
         for (const op of allOpen) {
