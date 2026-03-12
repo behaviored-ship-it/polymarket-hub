@@ -369,13 +369,14 @@ export default function App() {
         if(!res.ok) throw new Error(`API ${res.status}`);
         const data=await res.json();
         if(!Array.isArray(data)||data.length===0) break;
+        const pageSz = data.length;
         for (const d of data) {
           const key = d.asset || d.conditionId || JSON.stringify({t:d.title,o:d.outcome,ts:d.timestamp});
           if (!seenAssets.has(key)) { seenAssets.add(key); all.push(d); }
         }
         setFetchMsg(`Loading closed... ${all.length} unique positions`);
-        if(data.length<100) break; // API returns 100 per page
-        offset+=100;
+        offset += pageSz;
+        if (offset >= 10000) break; // safety cap
       }
       const classified=[]; let skipped=0; let ambiguous=0;
       for(const t of all) {
@@ -440,17 +441,18 @@ export default function App() {
           const openUrl = `${PROXY_BASE}?wallet=${address.toLowerCase()}&type=open&offset=${openOffset}`;
           setFetchMsg(`Loading open positions... ${allOpen.length} unique so far`);
           const openRes = await fetch(openUrl);
-          if (!openRes.ok) break; // API returns error at offset >= 1000
-          const openPage = await openRes.json();
+          if (!openRes.ok) break; // API may error at high offsets
+          let openPage;
+          try { openPage = await openRes.json(); } catch(_) { break; }
           if (!Array.isArray(openPage) || openPage.length === 0) break;
+          const pageSz = openPage.length;
           for (const d of openPage) {
             const key = d.asset || d.conditionId || JSON.stringify({t:d.title,o:d.outcome});
             if (!seenOpenAssets.has(key)) { seenOpenAssets.add(key); allOpen.push(d); }
           }
-          if (openPage.length < 100) break; // API returns 100 per page
-          openOffset += 100;
-          if (openOffset >= 1000) {
-            setFetchMsg(`Open positions capped at offset 1000 (${allOpen.length} fetched) — API limit`);
+          openOffset += pageSz;
+          if (openOffset >= 10000) {
+            setFetchMsg(`Open positions capped at ${allOpen.length} — safety limit`);
             break;
           }
         }
