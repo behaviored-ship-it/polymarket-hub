@@ -8,7 +8,7 @@ export default async function handler(req, res) {
   const apiKey = process.env.heisenberg;
   if (!apiKey) return res.status(500).json({ error: "Heisenberg API key not configured" });
 
-  const { agent, ...params } = req.query;
+  const { agent, limit = "50", offset = "0", ...params } = req.query;
   if (!agent) return res.status(400).json({ error: "Missing agent parameter" });
 
   const BASE_URL = "https://narrative.agent.heisenberg.so/api/v2/semantic/retrieve/parameterized";
@@ -23,6 +23,13 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         agent_id: parseInt(agent),
         params: params,
+        pagination: {
+          limit: parseInt(limit),
+          offset: parseInt(offset),
+        },
+        formatter_config: {
+          format_type: "raw",
+        },
       }),
     });
 
