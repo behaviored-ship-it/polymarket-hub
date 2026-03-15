@@ -387,16 +387,31 @@ export default function App() {
               if (!winningOutcome) continue; // Market not yet resolved — skip
               // Compare Heisenberg's winning_outcome against wallet's held outcome
               const result = winningOutcome.toLowerCase() === (op.outcome || "").toLowerCase() ? "win" : "loss";
+              // Parse trade hour from title e.g. "Bitcoin Up or Down - March 15, 2:55PM-3:00PM ET"
+              // since open positions endpoint doesn't return a timestamp field
+              let expiredTs = Math.floor(Date.now()/1000);
+              let expiredDate = op.endDate ? op.endDate.slice(0,10) : tsToETDate(expiredTs);
+              let expiredHour = 12; // safe default: noon
+              try {
+                const titleMatch = (op.title||"").match(/,\s*(\d+):(\d+)(AM|PM)/i);
+                if (titleMatch) {
+                  let h = parseInt(titleMatch[1]);
+                  const ampm = titleMatch[3].toUpperCase();
+                  if (ampm === "PM" && h !== 12) h += 12;
+                  if (ampm === "AM" && h === 12) h = 0;
+                  expiredHour = h;
+                }
+              } catch(_) {}
               classified.push({
                 id: crypto.randomUUID(),
-                dateET: tsToETDate(op.timestamp || Math.floor(Date.now()/1000)),
-                hourET: tsToETHour(op.timestamp || Math.floor(Date.now()/1000)),
+                dateET: expiredDate,
+                hourET: expiredHour,
                 result,
                 avgPrice: parseFloat(op.avgPrice || 0.5),
                 size: parseFloat(op.size || 0),
                 realizedPnl: 0,
                 totalBought: parseFloat(op.totalBought || 0),
-                timestamp: op.timestamp || Math.floor(Date.now()/1000),
+                timestamp: expiredTs,
                 title: op.title || "",
                 expired: true,
               });
