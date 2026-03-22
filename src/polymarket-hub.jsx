@@ -93,7 +93,7 @@ function checkMarketCap(marketKey, currentExposure, stake, config) {
 function runBacktestPure(filteredTrades, config) {
   if (!filteredTrades || filteredTrades.length === 0) return null;
 
-  const { startBal, slippagePct, marketCapEnabled, marketCapAmt, dailyLimitEnabled, dailyLimitAmt } = config;
+  const { startBal, slippagePct, feeRate, minPrice, maxPrice, marketCapEnabled, marketCapAmt, dailyLimitEnabled, dailyLimitAmt } = config;
 
   let balance = parseFloat(startBal) || 100;
   const startBalance = balance;
@@ -102,7 +102,7 @@ function runBacktestPure(filteredTrades, config) {
   const marketExposure = {};
   const dailySpend = {};
   let tradeIndex = 0;
-  const skipped = { marketCap: 0, dailyLimit: 0, insufficientBalance: 0 };
+  const skipped = { marketCap: 0, dailyLimit: 0, insufficientBalance: 0, priceFilter: 0 };
 
   const groups = buildTradeGroups(filteredTrades);
 
@@ -117,6 +117,18 @@ function runBacktestPure(filteredTrades, config) {
       const currentExposure = marketExposure[marketKey] || 0;
       if (marketCapEnabled && currentExposure >= marketCapAmt) {
         skipped.marketCap++;
+        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
+        continue;
+      }
+
+      // Price range filter — skip trades outside configured entry price band
+      if (minPrice !== null && avgPrice < minPrice) {
+        skipped.priceFilter++;
+        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
+        continue;
+      }
+      if (maxPrice !== null && avgPrice > maxPrice) {
+        skipped.priceFilter++;
         equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
         continue;
       }
@@ -146,11 +158,15 @@ function runBacktestPure(filteredTrades, config) {
         dailySpend[dateKey] = (dailySpend[dateKey] || 0) + stake;
       }
 
+      // Apply fee (e.g. 1% PolyGun copy fee) — reduces effective stake
+      const feeCost = stake * (feeRate / 100);
+      const stakeAfterFee = stake - feeCost;
+
       if (t.result === "win") {
-        balance += stake * (1 - effectivePrice) / effectivePrice;
+        balance += stakeAfterFee * (1 - effectivePrice) / effectivePrice - feeCost;
         wins++;
       } else {
-        balance -= stake;
+        balance -= stake; // full stake lost including fee
         losses++;
       }
 
@@ -272,6 +288,9 @@ export default function App() {
   const [btDailyLimit, setBtDailyLimit] = useState("");
   const [btDailyLimitEnabled, setBtDailyLimitEnabled] = useState(false);
   const [btSlippage, setBtSlippage] = useState(0);
+  const [btMinPrice, setBtMinPrice] = useState("");
+  const [btMaxPrice, setBtMaxPrice] = useState("");
+  const [btFeeRate, setBtFeeRate] = useState(1);
   const [savedCurves, setSavedCurves] = useState([]);
   const [pendingCurve, setPendingCurve] = useState(null);
   const [pendingName, setPendingName] = useState("");
@@ -540,6 +559,9 @@ export default function App() {
       portfolioBalance: btPortfolioBalance,
       multiplier: parseFloat(btMultiplier) || 1,
       slippagePct: parseFloat(btSlippage) || 0,
+      feeRate: parseFloat(btFeeRate) || 0,
+      minPrice: btMinPrice !== "" ? parseFloat(btMinPrice) : null,
+      maxPrice: btMaxPrice !== "" ? parseFloat(btMaxPrice) : null,
       marketCapEnabled: btMarketCapEnabled && parseFloat(btMarketCap) > 0,
       marketCapAmt: parseFloat(btMarketCap) || Infinity,
       dailyLimitEnabled: btDailyLimitEnabled && parseFloat(btDailyLimit) > 0,
@@ -549,6 +571,7 @@ export default function App() {
     };
     return runBacktestPure(filteredTrades, config);
   }, [btStartBal, btSizingMode, btFixedAmt, btPct, btPortfolioBalance, btMultiplier, btSlippage,
+      btFeeRate, btMinPrice, btMaxPrice,
       btMarketCapEnabled, btMarketCap, btDailyLimitEnabled, btDailyLimit,
       leaderPortfolioData, btLeaderBalance]);
 
@@ -985,6 +1008,26 @@ export default function App() {
                       </div>
                       {btDailyLimitEnabled&&<div style={{fontSize:10,color:"#b0bcd0"}}>resets each ET day</div>}
                     </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>ENTRY PRICE RANGE</label>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <input type="number" value={btMinPrice} onChange={e=>setBtMinPrice(e.target.value)}
+                          placeholder="min" min="0" max="1" step="0.01" style={{...S.inp,width:52}}/>
+                        <span style={{fontSize:11,color:"#7080a0"}}>–</span>
+                        <input type="number" value={btMaxPrice} onChange={e=>setBtMaxPrice(e.target.value)}
+                          placeholder="max" min="0" max="1" step="0.01" style={{...S.inp,width:52}}/>
+                      </div>
+                      <div style={{fontSize:10,color:"#b0bcd0"}}>0–1 range, e.g. 0.40–0.65</div>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>POLYGUN FEE (%)</label>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <input type="number" value={btFeeRate} onChange={e=>setBtFeeRate(e.target.value)}
+                          min="0" max="10" step="0.1" style={{...S.inp,width:55}}/>
+                        <span style={{fontSize:11,color:"#7080a0"}}>%</span>
+                      </div>
+                      {parseFloat(btFeeRate)>0&&<div style={{fontSize:10,color:"#f0c040"}}>-${(parseFloat(btFeeRate)/100*(parseFloat(btFixedAmt)||10)).toFixed(2)} per trade</div>}
+                    </div>
                   </div>
 
                   <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:10}}>
@@ -1353,9 +1396,10 @@ export default function App() {
               {/* ── SKIP WARNING BANNER ── */}
               {btMode!=="all"&&btResult&&(()=>{
                 const s = btResult.skipped;
-                const total = s.marketCap + s.dailyLimit + s.insufficientBalance;
+                const total = s.priceFilter + s.marketCap + s.dailyLimit + s.insufficientBalance;
                 if(total===0) return null;
                 const parts = [
+                  s.priceFilter>0 && `${s.priceFilter} price filter`,
                   s.marketCap>0 && `${s.marketCap} market cap`,
                   s.dailyLimit>0 && `${s.dailyLimit} daily limit`,
                   s.insufficientBalance>0 && `${s.insufficientBalance} insufficient balance`,
