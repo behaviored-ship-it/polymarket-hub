@@ -357,66 +357,52 @@ export default function App() {
         });
       }
 
-      // ── Fetch open positions and resolve expired ones via Heisenberg Agent 574 ──
+      // ── Fetch open positions and inject expired ones as losses ──
+      // Uses curPrice + redeemable fields only — no external API needed.
+      // curPrice=0 + redeemable=true → resolved loss (wrong side, unclaimed)
+      // curPrice=1 + redeemable=true → resolved win (right side, unclaimed)
+      // curPrice between 0 and 1     → genuinely live, skip
       let expiredCount = 0;
       try {
         const openUrl = `${PROXY_BASE}?wallet=${address.toLowerCase()}&type=open`;
         const openRes = await fetch(openUrl);
         const openData = await openRes.json();
-        if (Array.isArray(openData) && openData.length > 0) {
-          // Resolve each open position against Heisenberg Agent 574 (markets endpoint)
-          // to get the authoritative winning_outcome per condition_id
-          const resolveMarket = async (conditionId) => {
+        if (Array.isArray(openData)) {
+          for (const op of openData) {
+            const cur = parseFloat(op.curPrice || 0);
+            const redeemable = op.redeemable === true;
+            // Only process positions that have fully resolved
+            if (!redeemable) continue;
+            if (cur > 0.01 && cur < 0.99) continue; // genuinely live, skip
+            const result = cur >= 0.99 ? "win" : "loss";
+            // Parse hour from title since open positions have no timestamp field
+            // e.g. "Bitcoin Up or Down - March 15, 2:55PM-3:00PM ET"
+            let expiredDate = op.endDate ? op.endDate.slice(0,10) : tsToETDate(Math.floor(Date.now()/1000));
+            let expiredHour = 12;
             try {
-              const url = `/api/heisenberg?agent=574&condition_id=${conditionId}&closed=True&limit=10`;
-              const r = await fetch(url);
-              const d = await r.json();
-              const result = d?.data?.results?.[0];
-              return result?.winning_outcome || null; // null = not yet resolved
-            } catch(_) { return null; }
-          };
-
-          // Batch resolve — run in parallel with concurrency limit
-          const BATCH = 5;
-          for (let i = 0; i < openData.length; i += BATCH) {
-            const batch = openData.slice(i, i + BATCH);
-            const outcomes = await Promise.all(batch.map(op => resolveMarket(op.conditionId)));
-            for (let j = 0; j < batch.length; j++) {
-              const op = batch[j];
-              const winningOutcome = outcomes[j];
-              if (!winningOutcome) continue; // Market not yet resolved — skip
-              // Compare Heisenberg's winning_outcome against wallet's held outcome
-              const result = winningOutcome.toLowerCase() === (op.outcome || "").toLowerCase() ? "win" : "loss";
-              // Parse trade hour from title e.g. "Bitcoin Up or Down - March 15, 2:55PM-3:00PM ET"
-              // since open positions endpoint doesn't return a timestamp field
-              let expiredTs = Math.floor(Date.now()/1000);
-              let expiredDate = op.endDate ? op.endDate.slice(0,10) : tsToETDate(expiredTs);
-              let expiredHour = 12; // safe default: noon
-              try {
-                const titleMatch = (op.title||"").match(/,\s*(\d+):(\d+)(AM|PM)/i);
-                if (titleMatch) {
-                  let h = parseInt(titleMatch[1]);
-                  const ampm = titleMatch[3].toUpperCase();
-                  if (ampm === "PM" && h !== 12) h += 12;
-                  if (ampm === "AM" && h === 12) h = 0;
-                  expiredHour = h;
-                }
-              } catch(_) {}
-              classified.push({
-                id: crypto.randomUUID(),
-                dateET: expiredDate,
-                hourET: expiredHour,
-                result,
-                avgPrice: parseFloat(op.avgPrice || 0.5),
-                size: parseFloat(op.size || 0),
-                realizedPnl: 0,
-                totalBought: parseFloat(op.totalBought || 0),
-                timestamp: expiredTs,
-                title: op.title || "",
-                expired: true,
-              });
-              expiredCount++;
-            }
+              const m = (op.title||"").match(/,\s*(\d+):(\d+)(AM|PM)/i);
+              if (m) {
+                let h = parseInt(m[1]);
+                const ampm = m[3].toUpperCase();
+                if (ampm === "PM" && h !== 12) h += 12;
+                if (ampm === "AM" && h === 12) h = 0;
+                expiredHour = h;
+              }
+            } catch(_) {}
+            classified.push({
+              id: crypto.randomUUID(),
+              dateET: expiredDate,
+              hourET: expiredHour,
+              result,
+              avgPrice: parseFloat(op.avgPrice || 0.5),
+              size: parseFloat(op.size || 0),
+              realizedPnl: 0,
+              totalBought: parseFloat(op.totalBought || 0),
+              timestamp: Math.floor(Date.now()/1000),
+              title: op.title || "",
+              expired: true,
+            });
+            expiredCount++;
           }
         }
       } catch(_) {}
