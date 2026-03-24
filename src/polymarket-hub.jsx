@@ -1399,20 +1399,18 @@ export default function App() {
                               <ReferenceLine y={parseFloat(btStartBal)} stroke="#505878" strokeDasharray="4 4"/>
                               <Line type="monotone" dataKey="live" name="live"
                                 stroke="#ffffff" strokeWidth={1.5} strokeOpacity={0.9}
-                                dot={btFillsMode ? (()=>{
-                                  const seen = new Set();
-                                  return (props) => {
-                                    const {cx,cy,payload} = props;
-                                    if(!cx||!cy) return null;
-                                    const fills = payload?.fills || 1;
-                                    if(fills <= 1) return null;
-                                    const key = payload?.i;
-                                    if(seen.has(key)) return null;
-                                    seen.add(key);
-                                    const r = Math.min(2 + fills, 7);
-                                    return <circle key={`dot-${cx}-${cy}`} cx={cx} cy={cy} r={r} fill="#f0c040" fillOpacity={0.8} stroke="none"/>;
-                                  };
-                                })() : false}
+                                dot={btFillsMode ? (props) => {
+                                  const {cx,cy,payload,index} = props;
+                                  if(!cx||!cy) return null;
+                                  const fills = payload?.fills || 1;
+                                  if(fills <= 1) return null;
+                                  // Only render dot at the first occurrence of each trade index
+                                  // by checking if this is the lowest x for this i value in merged
+                                  const prevPoint = merged[index - 1];
+                                  if(prevPoint && prevPoint.i === payload.i) return null;
+                                  const r = Math.min(2 + fills, 7);
+                                  return <circle key={`dot-${payload.i}`} cx={cx} cy={cy} r={r} fill="#f0c040" fillOpacity={0.8} stroke="none"/>;
+                                } : false}
                               />
                               {savedCurves.map((curve,i)=>(
                                 <Line key={i} type="monotone" dataKey={`saved_${i}`} name={`saved_${i}`}
