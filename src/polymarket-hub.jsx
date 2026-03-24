@@ -117,7 +117,7 @@ function runBacktestPure(filteredTrades, config) {
       const currentExposure = marketExposure[marketKey] || 0;
       if (marketCapEnabled && currentExposure >= marketCapAmt) {
         skipped.marketCap++;
-        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
+        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: group.length });
         continue;
       }
 
@@ -138,7 +138,7 @@ function runBacktestPure(filteredTrades, config) {
         const spent = dailySpend[dateKey] || 0;
         if (spent >= dailyLimitAmt) {
           skipped.dailyLimit++;
-          equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
+          equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: group.length });
           continue;
         }
       }
@@ -147,7 +147,7 @@ function runBacktestPure(filteredTrades, config) {
 
       if (stake <= 0 || balance <= 0) {
         skipped.insufficientBalance++;
-        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
+        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: group.length });
         continue;
       }
 
@@ -175,7 +175,7 @@ function runBacktestPure(filteredTrades, config) {
       const dd = ((peak - balance) / peak) * 100;
       if (dd > maxDD) maxDD = dd;
 
-      equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
+      equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: group.length });
     }
   }
 
@@ -291,6 +291,8 @@ export default function App() {
   const [btMinPrice, setBtMinPrice] = useState("");
   const [btMaxPrice, setBtMaxPrice] = useState("");
   const [btFeeRate, setBtFeeRate] = useState(1);
+  const [btFillsMode, setBtFillsMode] = useState(false);
+  const [fillsData, setFillsData] = useState([]);
   const [savedCurves, setSavedCurves] = useState([]);
   const [pendingCurve, setPendingCurve] = useState(null);
   const [pendingName, setPendingName] = useState("");
@@ -372,7 +374,8 @@ export default function App() {
           realizedPnl:p,
           totalBought:parseFloat(t.totalBought||0),
           timestamp:t.timestamp,
-          title:t.title||""
+          title:t.title||"",
+          conditionId:t.conditionId||"",
         });
       }
 
@@ -431,6 +434,9 @@ export default function App() {
       setFetchStatus("success");
       const expiredNote = expiredCount > 0 ? ` · ⚠ ${expiredCount} expired positions included as losses` : "";
       setFetchMsg(`Loaded ${classified.length - expiredCount} trades (${skipped} zero-PnL skipped)${expiredNote} — auto-saving...`);
+      const positionMap = {};
+      classified.forEach(t => { if (t.conditionId) positionMap[t.conditionId] = t.result; });
+      fetchFills(address, positionMap);
     } catch(err) {
       if(err.message.includes("fetch")||err.message.includes("CORS")||err.message.includes("NetworkError")) {
         setFetchStatus("cors"); setFetchMsg("CORS blocked — use Bulk Import in LOG tab");
@@ -439,6 +445,47 @@ export default function App() {
       }
     }
   }, [walletAddr]);
+
+  // ── Fetch Fills (trade-level data for Advanced backtest mode) ────────────────
+  const fetchFills = useCallback(async (address, positionMap) => {
+    try {
+      let allFills = [], offset = 0;
+      while (true) {
+        const url = `https://data-api.polymarket.com/trades?user=${address.toLowerCase()}&limit=50&offset=${offset}`;
+        const res = await fetch(url);
+        if (!res.ok) break;
+        const data = await res.json();
+        if (!Array.isArray(data) || data.length === 0) break;
+        allFills = allFills.concat(data);
+        if (data.length < 50) break;
+        offset += 50;
+      }
+      allFills.reverse();
+      const annotated = allFills
+        .filter(t => t.side === 'BUY')
+        .map(t => {
+          const result = positionMap[t.conditionId] || null;
+          if (!result) return null;
+          const ts = t.timestamp || Math.floor(Date.now() / 1000);
+          return {
+            id: crypto.randomUUID(),
+            dateET: tsToETDate(ts),
+            hourET: tsToETHour(ts),
+            result,
+            avgPrice: parseFloat(t.price || 0.5),
+            size: parseFloat(t.size || 0),
+            realizedPnl: 0,
+            totalBought: parseFloat(t.size || 0),
+            timestamp: ts,
+            title: t.title || "",
+            conditionId: t.conditionId,
+            isFill: true,
+          };
+        })
+        .filter(Boolean);
+      setFillsData(annotated);
+    } catch(_) {}
+  }, []);
 
   // ── Fetch PnL ───────────────────────────────────────────────────────────────
   const fetchPnL = useCallback(async () => {
@@ -583,7 +630,7 @@ export default function App() {
   };
 
   const btFilteredTrades=useMemo(()=>{
-    let base = trades;
+    let base = btFillsMode && fillsData.length > 0 ? fillsData : trades;
     if(btSelectedMarkets.length > 0) {
       base = base.filter(t => btSelectedMarkets.includes(getMarketCategory(t.title)));
     }
@@ -598,7 +645,7 @@ export default function App() {
     if(blockVal===0) return base.filter(t=>t.hourET>=0&&t.hourET<7);
     if(blockVal===7) return base;
     return base.filter(t=>getBlock4(t.hourET)===blockVal-1);
-  },[trades,btMode,btBlock,btDateFrom,btDateTo,btCustomBlock,btSelectedHours,btSelectedMarkets]);
+  },[trades,fillsData,btFillsMode,btMode,btBlock,btDateFrom,btDateTo,btCustomBlock,btSelectedHours,btSelectedMarkets]);
 
   const allBlocksResults=useMemo(()=>{
     if(btMode!=="all") return null;
@@ -665,7 +712,7 @@ export default function App() {
     const hourLabel = d.hour!==null && d.hour!==undefined ? HOUR_LABELS[d.hour] : "";
     return (
       <div style={{background:"#0d0d1f",border:"1px solid #1e2040",fontFamily:"'JetBrains Mono',monospace",fontSize:12,padding:"8px 12px"}}>
-        <div style={{color:"#7080a0",marginBottom:3}}>Trade {d.i}</div>
+        <div style={{color:"#7080a0",marginBottom:3}}>Trade {d.i}{d.fills>1?<span style={{color:"#f0c040",marginLeft:6}}>{d.fills} fills</span>:null}</div>
         {d.date&&<div style={{color:"#c0cce0"}}>{d.date}{hourLabel?` · ${hourLabel} ET`:""}</div>}
         <div style={{color:"#00ff9d",fontWeight:"bold",marginTop:3}}>${(d.bal||0).toFixed(2)}</div>
       </div>
@@ -975,7 +1022,18 @@ export default function App() {
 
                 {/* ── LEFT: COPY TRADE SETTINGS + POSITION SIZING ── */}
                 <div style={S.panel}>
-                  <div style={S.secT}>SETTINGS & SIZING</div>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,borderBottom:"1px solid #1e2040",paddingBottom:8}}>
+                    <div style={S.secT}>SETTINGS & SIZING</div>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MODE</span>
+                      <button onClick={()=>setBtFillsMode(false)} style={S.seg(!btFillsMode)}>SIMPLE</button>
+                      <button onClick={()=>setBtFillsMode(true)}
+                        style={{...S.seg(btFillsMode),opacity:fillsData.length===0?0.4:1}}
+                        title={fillsData.length===0?"Fetch a wallet first":""}>
+                        ADVANCED {fillsData.length>0?`· ${fillsData.length} fills`:""}
+                      </button>
+                    </div>
+                  </div>
 
                   <div style={{display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-start",marginBottom:12,paddingBottom:10,borderBottom:"1px solid #1e2040"}}>
                     <div style={{display:"flex",flexDirection:"column",gap:3}}>
@@ -1297,7 +1355,16 @@ export default function App() {
                               />
                               <ReferenceLine y={parseFloat(btStartBal)} stroke="#505878" strokeDasharray="4 4"/>
                               <Line type="monotone" dataKey="live" name="live"
-                                stroke="#ffffff" dot={false} strokeWidth={1.5} strokeOpacity={0.9}/>
+                                stroke="#ffffff" strokeWidth={1.5} strokeOpacity={0.9}
+                                dot={btFillsMode ? (props) => {
+                                  const {cx,cy,payload} = props;
+                                  if(!cx||!cy) return null;
+                                  const fills = payload?.fills || 1;
+                                  if(fills <= 1) return null;
+                                  const r = Math.min(2 + fills, 7);
+                                  return <circle key={`dot-${cx}-${cy}`} cx={cx} cy={cy} r={r} fill="#f0c040" fillOpacity={0.8} stroke="none"/>;
+                                } : false}
+                              />
                               {savedCurves.map((curve,i)=>(
                                 <Line key={i} type="monotone" dataKey={`saved_${i}`} name={`saved_${i}`}
                                   stroke={curve.color} dot={false} strokeWidth={1.5} strokeOpacity={0.85}/>
