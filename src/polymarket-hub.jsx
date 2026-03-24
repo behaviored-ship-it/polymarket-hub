@@ -297,6 +297,7 @@ export default function App() {
   const [savedCurves, setSavedCurves] = useState([]);
   const [pendingCurve, setPendingCurve] = useState(null);
   const [pendingName, setPendingName] = useState("");
+  const [clickedPoint, setClickedPoint] = useState(null); // {point, trade} for pinned detail panel
 
   // ── Auto-load on mount ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -1317,7 +1318,10 @@ export default function App() {
                   <div style={S.panel}>
                     {/* ── Equity curve header + overlay controls ── */}
                     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,flexWrap:"wrap",gap:6}}>
-                      <div style={S.secT}>EQUITY CURVE {savedCurves.length>0&&<span style={{color:"#7080a0",fontSize:10}}>+{savedCurves.length} saved</span>}</div>
+                      <div style={{display:"flex",alignItems:"baseline",gap:10}}>
+                        <div style={S.secT}>EQUITY CURVE {savedCurves.length>0&&<span style={{color:"#7080a0",fontSize:10}}>+{savedCurves.length} saved</span>}</div>
+                        <span style={{fontSize:10,color:"#505878",letterSpacing:1}}>↓ click any point to inspect</span>
+                      </div>
                       <div style={{display:"flex",gap:6}}>
                         {btResult&&btResult.equity.length>1&&(()=>{
                           const nextColor = OVERLAY_COLORS[savedCurves.length % OVERLAY_COLORS.length];
@@ -1376,7 +1380,19 @@ export default function App() {
                       return(
                         <div>
                           <ResponsiveContainer width="100%" height={220}>
-                            <LineChart data={merged} margin={{top:5,right:10,left:0,bottom:5}}>
+                            <LineChart data={merged} margin={{top:5,right:10,left:0,bottom:5}}
+                              onClick={(chartData) => {
+                                if (!chartData || !chartData.activePayload) return;
+                                const pt = chartData.activePayload[0]?.payload;
+                                if (!pt || pt.i === undefined) return;
+                                const tradeIdx = pt.i - 1;
+                                const trade = btFilteredTrades[tradeIdx] || null;
+                                setClickedPoint(prev =>
+                                  prev && prev.point.i === pt.i ? null : { point: pt, trade }
+                                );
+                              }}
+                              style={{cursor:"crosshair"}}
+                            >
                               <XAxis dataKey="x" hide/>
                               <YAxis domain={["auto","auto"]} tick={{fill:"#7080a0",fontSize:12}} width={55} tickFormatter={v=>`$${v}`}/>
                               <Tooltip content={<EquityTooltip savedCurves={savedCurves}/>}/>
@@ -1398,6 +1414,43 @@ export default function App() {
                               ))}
                             </LineChart>
                           </ResponsiveContainer>
+
+                          {/* ── Clicked Point Detail Panel ── */}
+                          {clickedPoint&&(()=>{
+                            const {point:pt, trade:tr} = clickedPoint;
+                            const hourLabel = pt.hour!==null && pt.hour!==undefined ? HOUR_LABELS[pt.hour] : "";
+                            const isWin = tr?.result === "win";
+                            const stake = tr ? Math.min(parseFloat(btFixedAmt)||10, parseFloat(btStartBal)||100) : 0;
+                            const pnl = tr ? (isWin ? stake * (1 - (tr.avgPrice||0.5)) / (tr.avgPrice||0.5) : -stake) : 0;
+                            return(
+                              <div style={{background:"#0a0a1a",border:"1px solid #1e2040",borderRadius:2,padding:"12px 14px",marginTop:8}}>
+                                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+                                  <div style={{fontSize:11,color:"#7080a0",letterSpacing:1}}>TRADE {pt.i} OF {btFilteredTrades.length} · {pt.date}{hourLabel?` · ${hourLabel} ET`:""}</div>
+                                  <button onClick={()=>setClickedPoint(null)} style={{background:"none",border:"none",color:"#505880",cursor:"pointer",fontSize:14,padding:0,lineHeight:1}}>✕</button>
+                                </div>
+                                {tr&&<div style={{fontSize:12,color:"#c0cce0",marginBottom:8,lineHeight:1.4}}>{tr.title||"Unknown market"}</div>}
+                                <div style={{display:"flex",gap:16,flexWrap:"wrap",marginBottom:tr?.fillsInPosition>1?8:0}}>
+                                  {tr&&<div style={{display:"flex",flexDirection:"column",gap:2}}>
+                                    <span style={{fontSize:10,color:"#7080a0",letterSpacing:1}}>RESULT</span>
+                                    <span style={{fontSize:13,fontWeight:"bold",color:isWin?"#00ff9d":"#ff4d6d"}}>{isWin?"WIN":"LOSS"} {pnl>=0?"+":""}{pnl.toFixed(2)}</span>
+                                  </div>}
+                                  {tr&&<div style={{display:"flex",flexDirection:"column",gap:2}}>
+                                    <span style={{fontSize:10,color:"#7080a0",letterSpacing:1}}>ENTRY</span>
+                                    <span style={{fontSize:13,color:"#ffffff"}}>{(tr.avgPrice||0).toFixed(3)}</span>
+                                  </div>}
+                                  <div style={{display:"flex",flexDirection:"column",gap:2}}>
+                                    <span style={{fontSize:10,color:"#7080a0",letterSpacing:1}}>BALANCE</span>
+                                    <span style={{fontSize:13,color:"#00ff9d"}}>${(pt.bal||0).toFixed(2)}</span>
+                                  </div>
+                                  {pt.fills>1&&<div style={{display:"flex",flexDirection:"column",gap:2}}>
+                                    <span style={{fontSize:10,color:"#7080a0",letterSpacing:1}}>FILLS</span>
+                                    <span style={{fontSize:13,color:"#f0c040"}}>{pt.fills} fills in position</span>
+                                  </div>}
+                                </div>
+                                {tr?.expired&&<div style={{fontSize:10,color:"#ff9d00",letterSpacing:1,marginTop:4}}>⚠ EXPIRED / UNCLAIMED POSITION</div>}
+                              </div>
+                            );
+                          })()}
 
                           {savedCurves.length>0&&(()=>{
                             const allCurves = [
