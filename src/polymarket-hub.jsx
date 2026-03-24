@@ -139,7 +139,7 @@ function runBacktestPure(filteredTrades, config) {
         const spent = dailySpend[dateKey] || 0;
         if (spent >= dailyLimitAmt) {
           skipped.dailyLimit++;
-          equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: group.length });
+          equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: t.fillsInPosition || group.length });
           continue;
         }
       }
@@ -148,7 +148,7 @@ function runBacktestPure(filteredTrades, config) {
 
       if (stake <= 0 || balance <= 0) {
         skipped.insufficientBalance++;
-        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: group.length });
+        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: t.fillsInPosition || group.length });
         continue;
       }
 
@@ -176,7 +176,7 @@ function runBacktestPure(filteredTrades, config) {
       const dd = ((peak - balance) / peak) * 100;
       if (dd > maxDD) maxDD = dd;
 
-      equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: group.length });
+      equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: t.fillsInPosition || group.length });
     }
   }
 
@@ -462,6 +462,11 @@ export default function App() {
         offset += 50;
       }
       allFills.reverse();
+      // Pre-compute fill count per conditionId so each fill knows how many siblings it has
+      const fillCountMap = {};
+      allFills.filter(t => t.side === 'BUY' && positionMap[t.conditionId]).forEach(t => {
+        fillCountMap[t.conditionId] = (fillCountMap[t.conditionId] || 0) + 1;
+      });
       const annotated = allFills
         .filter(t => t.side === 'BUY')
         .map(t => {
@@ -480,6 +485,7 @@ export default function App() {
             timestamp: ts,
             title: t.title || "",
             conditionId: t.conditionId,
+            fillsInPosition: fillCountMap[t.conditionId] || 1,
             isFill: true,
           };
         })
@@ -711,11 +717,44 @@ export default function App() {
     if(!active||!payload||!payload[0]) return null;
     const d = payload[0].payload;
     const hourLabel = d.hour!==null && d.hour!==undefined ? HOUR_LABELS[d.hour] : "";
+    // Find all visible curves in this tooltip
+    const allCurves = payload.filter(p => p.value !== null && p.value !== undefined);
     return (
-      <div style={{background:"#0d0d1f",border:"1px solid #1e2040",fontFamily:"'JetBrains Mono',monospace",fontSize:12,padding:"8px 12px"}}>
-        <div style={{color:"#7080a0",marginBottom:3}}>Trade {d.i}{d.fills>1?<span style={{color:"#f0c040",marginLeft:6}}>{d.fills} fills</span>:null}</div>
-        {d.date&&<div style={{color:"#c0cce0"}}>{d.date}{hourLabel?` · ${hourLabel} ET`:""}</div>}
-        <div style={{color:"#00ff9d",fontWeight:"bold",marginTop:3}}>${(d.bal||0).toFixed(2)}</div>
+      <div style={{background:"#0d0d1f",border:"1px solid #1e2040",fontFamily:"'JetBrains Mono',monospace",fontSize:12,padding:"10px 14px",minWidth:180}}>
+        {/* Header: trade index + date/time */}
+        <div style={{color:"#7080a0",fontSize:11,marginBottom:4,letterSpacing:1}}>
+          TRADE {d.i} {d.date?`· ${d.date}`:""}
+        </div>
+        {hourLabel&&<div style={{color:"#8090b0",fontSize:11,marginBottom:6}}>{hourLabel} ET</div>}
+        {/* Fill count badge — only in advanced mode */}
+        {d.fills>1&&(
+          <div style={{background:"#1a1400",border:"1px solid #f0c040",borderRadius:2,padding:"2px 7px",fontSize:11,color:"#f0c040",display:"inline-block",marginBottom:6,letterSpacing:1}}>
+            {d.fills} FILLS
+          </div>
+        )}
+        {/* Balance per curve */}
+        {allCurves.map((p,i) => {
+          const label = p.name==="live" ? "CURRENT" : null;
+          if(!label) return null;
+          return(
+            <div key={i} style={{display:"flex",justifyContent:"space-between",gap:16,marginTop:2}}>
+              <span style={{color:"#7080a0",fontSize:11}}>{label}</span>
+              <span style={{color:"#00ff9d",fontWeight:"bold"}}>${(p.value||0).toFixed(2)}</span>
+            </div>
+          );
+        })}
+        {/* Saved curves */}
+        {allCurves.filter(p=>p.name!=="live").map((p,i)=>{
+          const idx = parseInt(p.name.replace("saved_",""));
+          return(
+            <div key={i} style={{display:"flex",justifyContent:"space-between",gap:16,marginTop:2}}>
+              <span style={{color:p.stroke||"#7080a0",fontSize:11,maxWidth:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                {isNaN(idx) ? p.name : `SAVED ${idx+1}`}
+              </span>
+              <span style={{color:p.stroke||"#c0cce0",fontWeight:"bold"}}>${(p.value||0).toFixed(2)}</span>
+            </div>
+          );
+        })}
       </div>
     );
   };
