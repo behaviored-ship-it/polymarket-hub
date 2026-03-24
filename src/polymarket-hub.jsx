@@ -713,7 +713,7 @@ export default function App() {
     setBtSelectedHours(prev => prev.includes(h) ? prev.filter(x=>x!==h) : [...prev, h]);
   };
 
-  const EquityTooltip = ({active,payload}) => {
+  const EquityTooltip = ({active,payload,savedCurves:sc=[]}) => {
     if(!active||!payload||!payload[0]) return null;
     const d = payload[0].payload;
     const hourLabel = d.hour!==null && d.hour!==undefined ? HOUR_LABELS[d.hour] : "";
@@ -742,7 +742,8 @@ export default function App() {
         {/* Saved curves */}
         {allCurves.filter(p=>p.name!=="live").map((p,i)=>{
           const idx = parseInt(p.name.replace("saved_",""));
-          const label = isNaN(idx) ? p.name : `SAVED ${idx+1}`;
+          const savedLabel = (sc[idx]||{}).label;
+          const label = savedLabel || (isNaN(idx) ? p.name : `SAVED ${idx+1}`);
           return(
             <div key={`saved-${i}`} style={{display:"flex",justifyContent:"space-between",gap:16,marginTop:2}}>
               <span style={{color:p.stroke||"#7080a0",fontSize:11,maxWidth:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{label}</span>
@@ -1375,21 +1376,7 @@ export default function App() {
                             <LineChart data={merged} margin={{top:5,right:10,left:0,bottom:5}}>
                               <XAxis dataKey="x" hide/>
                               <YAxis domain={["auto","auto"]} tick={{fill:"#7080a0",fontSize:12}} width={55} tickFormatter={v=>`$${v}`}/>
-                              <Tooltip
-                                content={({active,payload})=>{
-                                  if(!active||!payload||!payload.length) return null;
-                                  return(
-                                    <div style={{background:"#0d0d1f",border:"1px solid #1e2040",fontFamily:"'JetBrains Mono',monospace",fontSize:12,padding:"8px 12px"}}>
-                                      {payload.map((p,i)=>(
-                                        <div key={i} style={{color:p.stroke||p.color,marginBottom:2}}>
-                                          <span style={{color:"#7080a0",marginRight:6}}>{p.name==="live"?"CURRENT":savedCurves[parseInt(p.name.replace("saved_",""))]?.label}</span>
-                                          ${(p.value||0).toFixed(2)}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  );
-                                }}
-                              />
+                              <Tooltip content={<EquityTooltip savedCurves={savedCurves}/>}/>
                               <ReferenceLine y={parseFloat(btStartBal)} stroke="#505878" strokeDasharray="4 4"/>
                               <Line type="monotone" dataKey="live" name="live"
                                 stroke="#ffffff" strokeWidth={1.5} strokeOpacity={0.9}
