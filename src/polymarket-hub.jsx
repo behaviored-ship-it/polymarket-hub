@@ -727,30 +727,25 @@ export default function App() {
         </div>
         {hourLabel&&<div style={{color:"#8090b0",fontSize:11,marginBottom:6}}>{hourLabel} ET</div>}
         {/* Fill count badge — only in advanced mode */}
-        {d.fills>1&&(
+        {d.fills>1 ? (
           <div style={{background:"#1a1400",border:"1px solid #f0c040",borderRadius:2,padding:"2px 7px",fontSize:11,color:"#f0c040",display:"inline-block",marginBottom:6,letterSpacing:1}}>
             {d.fills} FILLS
           </div>
-        )}
+        ) : null}
         {/* Balance per curve */}
-        {allCurves.map((p,i) => {
-          const label = p.name==="live" ? "CURRENT" : null;
-          if(!label) return null;
-          return(
-            <div key={i} style={{display:"flex",justifyContent:"space-between",gap:16,marginTop:2}}>
-              <span style={{color:"#7080a0",fontSize:11}}>{label}</span>
-              <span style={{color:"#00ff9d",fontWeight:"bold"}}>${(p.value||0).toFixed(2)}</span>
-            </div>
-          );
-        })}
+        {allCurves.filter(p=>p.name==="live").map((p,i) => (
+          <div key={i} style={{display:"flex",justifyContent:"space-between",gap:16,marginTop:2}}>
+            <span style={{color:"#7080a0",fontSize:11}}>CURRENT</span>
+            <span style={{color:"#00ff9d",fontWeight:"bold"}}>${(p.value||0).toFixed(2)}</span>
+          </div>
+        ))}
         {/* Saved curves */}
         {allCurves.filter(p=>p.name!=="live").map((p,i)=>{
           const idx = parseInt(p.name.replace("saved_",""));
+          const label = isNaN(idx) ? p.name : `SAVED ${idx+1}`;
           return(
-            <div key={i} style={{display:"flex",justifyContent:"space-between",gap:16,marginTop:2}}>
-              <span style={{color:p.stroke||"#7080a0",fontSize:11,maxWidth:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                {isNaN(idx) ? p.name : `SAVED ${idx+1}`}
-              </span>
+            <div key={`saved-${i}`} style={{display:"flex",justifyContent:"space-between",gap:16,marginTop:2}}>
+              <span style={{color:p.stroke||"#7080a0",fontSize:11,maxWidth:100,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{label}</span>
               <span style={{color:p.stroke||"#c0cce0",fontWeight:"bold"}}>${(p.value||0).toFixed(2)}</span>
             </div>
           );
