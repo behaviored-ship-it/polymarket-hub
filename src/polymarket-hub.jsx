@@ -32,6 +32,7 @@ function normalizeEquity(equity) {
     date: pt.date,
     hour: pt.hour,
     i: pt.i,
+    fills: pt.fills ?? 1,
   }));
 }
 
@@ -1324,7 +1325,9 @@ export default function App() {
                         const x = parseFloat(((i/POINTS)*100).toFixed(2));
                         const row = {x};
                         const ci = Math.round((i/POINTS)*(currentNorm.length-1));
-                        row["live"] = currentNorm[Math.min(ci, currentNorm.length-1)]?.bal ?? null;
+                        const livePt = currentNorm[Math.min(ci, currentNorm.length-1)];
+                        row["live"] = livePt?.bal ?? null;
+                        row["fills"] = livePt?.fills ?? 1;
                         savedCurves.forEach((curve, ci2) => {
                           const si = Math.round((i/POINTS)*(curve.equity.length-1));
                           row[`saved_${ci2}`] = curve.equity[Math.min(si, curve.equity.length-1)]?.bal ?? null;
