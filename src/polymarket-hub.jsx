@@ -1382,14 +1382,16 @@ export default function App() {
                           <ResponsiveContainer width="100%" height={220}>
                             <LineChart data={merged} margin={{top:5,right:10,left:0,bottom:5}}
                               onClick={(chartData) => {
-                                if (!chartData || !chartData.activePayload) return;
-                                const pt = chartData.activePayload[0]?.payload;
-                                if (!pt || pt.i === undefined) return;
-                                const tradeIdx = pt.i - 1;
-                                const trade = btFilteredTrades[tradeIdx] || null;
-                                setClickedPoint(prev =>
-                                  prev && prev.point.i === pt.i ? null : { point: pt, trade }
-                                );
+                                try {
+                                  if (!chartData || !chartData.activePayload) return;
+                                  const pt = chartData.activePayload[0]?.payload;
+                                  if (!pt || pt.i === undefined || pt.i === 0) return;
+                                  const tradeIdx = (pt.i || 1) - 1;
+                                  const trade = (btFilteredTrades && btFilteredTrades[tradeIdx]) || null;
+                                  setClickedPoint(prev =>
+                                    prev && prev.point.i === pt.i ? null : { point: pt, trade }
+                                  );
+                                } catch(_) {}
                               }}
                               style={{cursor:"crosshair"}}
                             >
@@ -1421,83 +1423,87 @@ export default function App() {
 
                           {/* ── Clicked Point Detail Panel ── */}
                           {clickedPoint&&(()=>{
-                            const {point:pt, trade:tr} = clickedPoint;
-                            const hourLabel = pt.hour!==null && pt.hour!==undefined ? HOUR_LABELS[pt.hour] : "";
-                            const isWin = tr?.result === "win";
-                            // Get balance before this trade from equity array
-                            const prevEquityPt = btResult?.equity?.[pt.i - 1];
-                            const balBefore = prevEquityPt?.bal ?? pt.bal;
-                            const balAfter = pt.bal;
-                            const actualPnl = balAfter - balBefore;
-                            // Get all fills for this position (same conditionId) from fillsData
-                            const positionFills = tr?.conditionId && fillsData.length > 0
-                              ? fillsData.filter(f => f.conditionId === tr.conditionId)
-                              : [];
-                            const avgFillPrice = positionFills.length > 0
-                              ? positionFills.reduce((s,f) => s + f.avgPrice, 0) / positionFills.length
-                              : tr?.avgPrice;
-                            return(
-                              <div style={{background:"#0a0a1a",border:"1px solid #1e2040",borderRadius:2,padding:"12px 14px",marginTop:8}}>
-                                {/* Header */}
-                                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
-                                  <div style={{fontSize:11,color:"#7080a0",letterSpacing:1}}>
-                                    TRADE {pt.i} OF {btFilteredTrades.length} · {pt.date}{hourLabel ? ` · ${hourLabel} ET` : ""}
+                            try {
+                              const pt = clickedPoint.point || {};
+                              const tr = clickedPoint.trade || null;
+                              const hourLabel = (pt.hour != null) ? (HOUR_LABELS[pt.hour] || "") : "";
+                              const isWin = tr?.result === "win";
+                              const balAfter = parseFloat(pt.bal) || 0;
+                              const prevIdx = Math.max(0, (pt.i || 1) - 1);
+                              const prevEquityPt = btResult?.equity?.[prevIdx];
+                              const balBefore = parseFloat(prevEquityPt?.bal) || balAfter;
+                              const actualPnl = balAfter - balBefore;
+                              const condId = tr?.conditionId || "";
+                              const positionFills = (condId && fillsData.length > 0)
+                                ? fillsData.filter(f => f && f.conditionId === condId)
+                                : [];
+                              const avgFillPrice = positionFills.length > 0
+                                ? positionFills.reduce((s,f) => s + (parseFloat(f.avgPrice)||0), 0) / positionFills.length
+                                : (parseFloat(tr?.avgPrice) || 0);
+                              return(
+                                <div style={{background:"#0a0a1a",border:"1px solid #1e2040",borderRadius:2,padding:"12px 14px",marginTop:8}}>
+                                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+                                    <div style={{fontSize:11,color:"#7080a0",letterSpacing:1}}>
+                                      {"TRADE "+(pt.i||"?")+" OF "+btFilteredTrades.length+(pt.date?" · "+pt.date:"")+(hourLabel?" · "+hourLabel+" ET":"")}
+                                    </div>
+                                    <button onClick={()=>setClickedPoint(null)} style={{background:"none",border:"none",color:"#505880",cursor:"pointer",fontSize:14,padding:0,lineHeight:1}}>✕</button>
                                   </div>
-                                  <button onClick={()=>setClickedPoint(null)} style={{background:"none",border:"none",color:"#505880",cursor:"pointer",fontSize:14,padding:0,lineHeight:1}}>✕</button>
-                                </div>
-                                {tr&&<div style={{fontSize:12,color:"#c0cce0",marginBottom:10,lineHeight:1.4,fontWeight:"bold"}}>{tr.title||"Unknown market"}</div>}
-                                {/* Stats row */}
-                                <div style={{display:"flex",gap:20,flexWrap:"wrap",marginBottom:positionFills.length>1?10:0}}>
-                                  {tr&&<div style={{display:"flex",flexDirection:"column",gap:2}}>
-                                    <span style={{fontSize:10,color:"#7080a0",letterSpacing:1}}>RESULT</span>
-                                    <span style={{fontSize:13,fontWeight:"bold",color:isWin?"#00ff9d":"#ff4d6d"}}>
-                                      {isWin?"WIN":"LOSS"} {actualPnl>=0?"+":""}{actualPnl.toFixed(2)}
-                                    </span>
-                                  </div>}
-                                  {tr&&<div style={{display:"flex",flexDirection:"column",gap:2}}>
-                                    <span style={{fontSize:10,color:"#7080a0",letterSpacing:1}}>
-                                      {positionFills.length>1?"AVG ENTRY":"ENTRY"}
-                                    </span>
-                                    <span style={{fontSize:13,color:"#ffffff"}}>{(avgFillPrice||0).toFixed(4)}</span>
-                                  </div>}
-                                  <div style={{display:"flex",flexDirection:"column",gap:2}}>
-                                    <span style={{fontSize:10,color:"#7080a0",letterSpacing:1}}>BAL BEFORE</span>
-                                    <span style={{fontSize:13,color:"#b0bcd0"}}>${balBefore.toFixed(2)}</span>
+                                  {tr&&<div style={{fontSize:12,color:"#c0cce0",marginBottom:10,lineHeight:1.4,fontWeight:"bold"}}>{tr.title||"Unknown market"}</div>}
+                                  <div style={{display:"flex",gap:20,flexWrap:"wrap",marginBottom:positionFills.length>1?10:0}}>
+                                    {tr&&<div style={{display:"flex",flexDirection:"column",gap:2}}>
+                                      <span style={{fontSize:10,color:"#7080a0",letterSpacing:1}}>RESULT</span>
+                                      <span style={{fontSize:13,fontWeight:"bold",color:isWin?"#00ff9d":"#ff4d6d"}}>
+                                        {(isWin?"WIN":"LOSS")+" "+(actualPnl>=0?"+":"")+actualPnl.toFixed(2)}
+                                      </span>
+                                    </div>}
+                                    {tr&&<div style={{display:"flex",flexDirection:"column",gap:2}}>
+                                      <span style={{fontSize:10,color:"#7080a0",letterSpacing:1}}>{positionFills.length>1?"AVG ENTRY":"ENTRY"}</span>
+                                      <span style={{fontSize:13,color:"#ffffff"}}>{avgFillPrice.toFixed(4)}</span>
+                                    </div>}
+                                    <div style={{display:"flex",flexDirection:"column",gap:2}}>
+                                      <span style={{fontSize:10,color:"#7080a0",letterSpacing:1}}>BAL BEFORE</span>
+                                      <span style={{fontSize:13,color:"#b0bcd0"}}>{"$"+balBefore.toFixed(2)}</span>
+                                    </div>
+                                    <div style={{display:"flex",flexDirection:"column",gap:2}}>
+                                      <span style={{fontSize:10,color:"#7080a0",letterSpacing:1}}>BAL AFTER</span>
+                                      <span style={{fontSize:13,color:"#00ff9d"}}>{"$"+balAfter.toFixed(2)}</span>
+                                    </div>
+                                    {(pt.fills||0)>1&&<div style={{display:"flex",flexDirection:"column",gap:2}}>
+                                      <span style={{fontSize:10,color:"#7080a0",letterSpacing:1}}>FILLS</span>
+                                      <span style={{fontSize:13,color:"#f0c040"}}>{pt.fills+" fills"}</span>
+                                    </div>}
                                   </div>
-                                  <div style={{display:"flex",flexDirection:"column",gap:2}}>
-                                    <span style={{fontSize:10,color:"#7080a0",letterSpacing:1}}>BAL AFTER</span>
-                                    <span style={{fontSize:13,color:"#00ff9d"}}>${balAfter.toFixed(2)}</span>
-                                  </div>
-                                  {pt.fills>1&&<div style={{display:"flex",flexDirection:"column",gap:2}}>
-                                    <span style={{fontSize:10,color:"#7080a0",letterSpacing:1}}>FILLS</span>
-                                    <span style={{fontSize:13,color:"#f0c040"}}>{pt.fills} fills</span>
-                                  </div>}
-                                </div>
-                                {/* Fill breakdown — shown when multiple fills exist */}
-                                {positionFills.length>1&&(
-                                  <div style={{borderTop:"1px solid #1e2040",paddingTop:8,marginTop:4}}>
-                                    <div style={{fontSize:10,color:"#7080a0",letterSpacing:2,marginBottom:6}}>FILL BREAKDOWN</div>
-                                    <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                                      {positionFills.map((f,idx)=>(
-                                        <div key={idx} style={{display:"flex",gap:16,fontSize:11,alignItems:"center"}}>
-                                          <span style={{color:"#505878",minWidth:16}}>#{idx+1}</span>
-                                          <span style={{color:"#ffffff"}}>@ {f.avgPrice.toFixed(4)}</span>
-                                          <span style={{color:"#7080a0"}}>{f.size.toFixed(2)} shares</span>
-                                          <span style={{color:"#7080a0"}}>${(f.size*f.avgPrice).toFixed(2)} cost</span>
+                                  {positionFills.length>1&&(
+                                    <div style={{borderTop:"1px solid #1e2040",paddingTop:8,marginTop:4}}>
+                                      <div style={{fontSize:10,color:"#7080a0",letterSpacing:2,marginBottom:6}}>FILL BREAKDOWN</div>
+                                      <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                                        {positionFills.map((f,idx)=>{
+                                          const fp = parseFloat(f.avgPrice)||0;
+                                          const fs = parseFloat(f.size)||0;
+                                          return(
+                                            <div key={idx} style={{display:"flex",gap:16,fontSize:11,alignItems:"center"}}>
+                                              <span style={{color:"#505878",minWidth:16}}>{"#"+(idx+1)}</span>
+                                              <span style={{color:"#ffffff"}}>{"@ "+fp.toFixed(4)}</span>
+                                              <span style={{color:"#7080a0"}}>{fs.toFixed(2)+" shares"}</span>
+                                              <span style={{color:"#7080a0"}}>{"$"+(fs*fp).toFixed(2)+" cost"}</span>
+                                            </div>
+                                          );
+                                        })}
+                                        <div style={{display:"flex",gap:16,fontSize:11,borderTop:"1px solid #131330",paddingTop:4,marginTop:2}}>
+                                          <span style={{color:"#505878",minWidth:16}}>Σ</span>
+                                          <span style={{color:"#c0cce0"}}>{"avg @ "+avgFillPrice.toFixed(4)}</span>
+                                          <span style={{color:"#7080a0"}}>{positionFills.reduce((s,f)=>s+(parseFloat(f.size)||0),0).toFixed(2)+" shares"}</span>
+                                          <span style={{color:"#7080a0"}}>{"$"+positionFills.reduce((s,f)=>s+(parseFloat(f.size)||0)*(parseFloat(f.avgPrice)||0),0).toFixed(2)+" cost"}</span>
                                         </div>
-                                      ))}
-                                      <div style={{display:"flex",gap:16,fontSize:11,borderTop:"1px solid #131330",paddingTop:4,marginTop:2}}>
-                                        <span style={{color:"#505878",minWidth:16}}>Σ</span>
-                                        <span style={{color:"#c0cce0"}}>avg @ {(avgFillPrice||0).toFixed(4)}</span>
-                                        <span style={{color:"#7080a0"}}>{positionFills.reduce((s,f)=>s+f.size,0).toFixed(2)} total shares</span>
-                                        <span style={{color:"#7080a0"}}>${positionFills.reduce((s,f)=>s+f.size*f.avgPrice,0).toFixed(2)} total cost</span>
                                       </div>
                                     </div>
-                                  </div>
-                                )}
-                                {tr?.expired&&<div style={{fontSize:10,color:"#ff9d00",letterSpacing:1,marginTop:6}}>⚠ EXPIRED / UNCLAIMED POSITION</div>}
-                              </div>
-                            );
+                                  )}
+                                  {tr?.expired&&<div style={{fontSize:10,color:"#ff9d00",letterSpacing:1,marginTop:6}}>⚠ EXPIRED / UNCLAIMED POSITION</div>}
+                                </div>
+                              );
+                            } catch(e) {
+                              return <div style={{background:"#0a0a1a",border:"1px solid #1e2040",borderRadius:2,padding:"12px 14px",marginTop:8,fontSize:11,color:"#ff4d6d"}}>Error loading trade detail</div>;
+                            }
                           })()}
 
                           {savedCurves.length>0&&(()=>{
