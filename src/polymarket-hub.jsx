@@ -1363,6 +1363,9 @@ export default function App() {
                         const livePt = currentNorm[Math.min(ci, currentNorm.length-1)];
                         row["live"] = livePt?.bal ?? null;
                         row["fills"] = livePt?.fills ?? 1;
+                        row["date"] = livePt?.date ?? "";
+                        row["hour"] = livePt?.hour ?? null;
+                        row["i"] = livePt?.i ?? 0;
                         savedCurves.forEach((curve, ci2) => {
                           const si = Math.round((i/POINTS)*(curve.equity.length-1));
                           row[`saved_${ci2}`] = curve.equity[Math.min(si, curve.equity.length-1)]?.bal ?? null;
