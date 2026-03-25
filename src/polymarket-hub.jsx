@@ -293,7 +293,8 @@ export default function App() {
   const [btMaxPrice, setBtMaxPrice] = useState("");
   const [btFeeRate, setBtFeeRate] = useState(1);
   const [btFillsMode, setBtFillsMode] = useState(false);
-  const [fillsData, setFillsData] = useState([]);
+  const [fillsData, setFillsData] = useState([]); // raw fills for click panel lookup
+  const [fillsMap, setFillsMap] = useState({}); // conditionId -> fills[] for backtest expansion
   const [savedCurves, setSavedCurves] = useState([]);
   const [pendingCurve, setPendingCurve] = useState(null);
   const [pendingName, setPendingName] = useState("");
@@ -453,7 +454,7 @@ export default function App() {
     try {
       let allFills = [], offset = 0;
       while (true) {
-        const url = `https://data-api.polymarket.com/trades?user=${address.toLowerCase()}&limit=50&offset=${offset}`;
+        const url = 'https://data-api.polymarket.com/trades?user=' + address.toLowerCase() + '&limit=50&offset=' + offset;
         const res = await fetch(url);
         if (!res.ok) break;
         const data = await res.json();
@@ -462,35 +463,41 @@ export default function App() {
         if (data.length < 50) break;
         offset += 50;
       }
-      allFills.reverse();
-      // Pre-compute fill count per conditionId so each fill knows how many siblings it has
-      const fillCountMap = {};
-      allFills.filter(t => t.side === 'BUY' && positionMap[t.conditionId]).forEach(t => {
-        fillCountMap[t.conditionId] = (fillCountMap[t.conditionId] || 0) + 1;
-      });
-      const annotated = allFills
-        .filter(t => t.side === 'BUY')
-        .map(t => {
-          const result = positionMap[t.conditionId] || null;
-          if (!result) return null;
-          const ts = t.timestamp || Math.floor(Date.now() / 1000);
-          return {
-            id: crypto.randomUUID(),
-            dateET: tsToETDate(ts),
-            hourET: tsToETHour(ts),
-            result,
-            avgPrice: parseFloat(t.price || 0.5),
+      allFills.reverse(); // chronological order
+
+      // Build fillsMap: conditionId -> array of fill records
+      // Only include BUY fills for markets we have a resolved position for
+      const map = {};
+      allFills
+        .filter(t => t.side === 'BUY' && positionMap[t.conditionId])
+        .forEach(t => {
+          if (!map[t.conditionId]) map[t.conditionId] = [];
+          map[t.conditionId].push({
+            price: parseFloat(t.price || 0.5),
             size: parseFloat(t.size || 0),
-            realizedPnl: 0,
-            totalBought: parseFloat(t.size || 0),
-            timestamp: ts,
+            timestamp: t.timestamp || 0,
             title: t.title || "",
             conditionId: t.conditionId,
-            fillsInPosition: fillCountMap[t.conditionId] || 1,
-            isFill: true,
-          };
-        })
-        .filter(Boolean);
+          });
+        });
+
+      // Compute fillsInPosition for each entry
+      const totalFills = Object.values(map).reduce((s, arr) => s + arr.length, 0);
+
+      // Also build flat annotated list for click panel lookup (keyed by conditionId)
+      const annotated = allFills
+        .filter(t => t.side === 'BUY' && positionMap[t.conditionId])
+        .map(t => ({
+          id: crypto.randomUUID(),
+          avgPrice: parseFloat(t.price || 0.5),
+          size: parseFloat(t.size || 0),
+          timestamp: t.timestamp || 0,
+          title: t.title || "",
+          conditionId: t.conditionId,
+          fillsInPosition: map[t.conditionId]?.length || 1,
+        }));
+
+      setFillsMap(map);
       setFillsData(annotated);
     } catch(_) {}
   }, []);
@@ -638,7 +645,35 @@ export default function App() {
   };
 
   const btFilteredTrades=useMemo(()=>{
-    let base = btFillsMode && fillsData.length > 0 ? fillsData : trades;
+    let base;
+    if (btFillsMode && Object.keys(fillsMap).length > 0) {
+      // Advanced mode: expand positions using fillsMap where fills exist,
+      // fall back to position record where no fills available.
+      // This preserves full trade history (same count as Simple) while using
+      // actual fill prices where available.
+      base = trades.flatMap(t => {
+        const fills = fillsMap[t.conditionId];
+        if (!fills || fills.length === 0) {
+          // No fill data — use position as-is (same as Simple mode)
+          return [{ ...t, fillsInPosition: 1 }];
+        }
+        // Expand into individual fills
+        return fills.map(f => ({
+          ...t,
+          id: crypto.randomUUID(),
+          avgPrice: f.price,
+          size: f.size,
+          totalBought: f.size,
+          timestamp: f.timestamp || t.timestamp,
+          dateET: f.timestamp ? tsToETDate(f.timestamp) : t.dateET,
+          hourET: f.timestamp ? tsToETHour(f.timestamp) : t.hourET,
+          fillsInPosition: fills.length,
+          isFill: true,
+        }));
+      });
+    } else {
+      base = trades;
+    }
     if(btSelectedMarkets.length > 0) {
       base = base.filter(t => btSelectedMarkets.includes(getMarketCategory(t.title)));
     }
@@ -653,7 +688,7 @@ export default function App() {
     if(blockVal===0) return base.filter(t=>t.hourET>=0&&t.hourET<7);
     if(blockVal===7) return base;
     return base.filter(t=>getBlock4(t.hourET)===blockVal-1);
-  },[trades,fillsData,btFillsMode,btMode,btBlock,btDateFrom,btDateTo,btCustomBlock,btSelectedHours,btSelectedMarkets]);
+  },[trades,fillsMap,btFillsMode,btMode,btBlock,btDateFrom,btDateTo,btCustomBlock,btSelectedHours,btSelectedMarkets]);
 
   const allBlocksResults=useMemo(()=>{
     if(btMode!=="all") return null;
@@ -1065,9 +1100,9 @@ export default function App() {
                       <span style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>MODE</span>
                       <button onClick={()=>setBtFillsMode(false)} style={S.seg(!btFillsMode)}>SIMPLE</button>
                       <button onClick={()=>setBtFillsMode(true)}
-                        style={{...S.seg(btFillsMode),opacity:fillsData.length===0?0.4:1}}
-                        title={fillsData.length===0?"Fetch a wallet first":""}>
-                        ADVANCED {fillsData.length>0?`· ${fillsData.length} fills`:""}
+                        style={{...S.seg(btFillsMode),opacity:Object.keys(fillsMap).length===0?0.4:1}}
+                        title={Object.keys(fillsMap).length===0?"Fetch a wallet first":""}>
+                        {"ADVANCED" + (Object.keys(fillsMap).length > 0 ? " · " + Object.values(fillsMap).reduce(function(s,a){return s+a.length;},0) + " fills in " + Object.keys(fillsMap).length + " markets" : "")}
                       </button>
                     </div>
                   </div>
