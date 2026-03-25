@@ -299,6 +299,9 @@ export default function App() {
   const [pendingCurve, setPendingCurve] = useState(null);
   const [pendingName, setPendingName] = useState("");
   const [clickedPoint, setClickedPoint] = useState(null); // {point, trade} for pinned detail panel
+  const [btSubTab, setBtSubTab] = useState("backtest"); // backtest | verify
+  const [verifyData, setVerifyData] = useState(null); // verification results
+  const [verifyStatus, setVerifyStatus] = useState("idle"); // idle | loading | done
 
   // ── Auto-load on mount ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -501,6 +504,68 @@ export default function App() {
       setFillsData(annotated);
     } catch(_) {}
   }, []);
+
+  // ── Run Fill Verification ────────────────────────────────────────────────────
+  const runVerification = useCallback(async () => {
+    const address = walletAddr.trim();
+    if (!address.startsWith("0x")) return;
+    setVerifyStatus("loading");
+    try {
+      // Fetch raw trades from Polymarket API (ground truth)
+      let allRaw = [], offset = 0;
+      while (true) {
+        const url = 'https://data-api.polymarket.com/trades?user=' + address.toLowerCase() + '&limit=50&offset=' + offset;
+        const res = await fetch(url);
+        if (!res.ok) break;
+        const data = await res.json();
+        if (!Array.isArray(data) || data.length === 0) break;
+        allRaw = allRaw.concat(data);
+        if (data.length < 50) break;
+        offset += 50;
+      }
+
+      // Group raw trades by conditionId
+      const rawByCondition = {};
+      allRaw.filter(t => t.side === 'BUY').forEach(t => {
+        if (!rawByCondition[t.conditionId]) rawByCondition[t.conditionId] = [];
+        rawByCondition[t.conditionId].push(t);
+      });
+
+      // Cross-reference against our fillsMap and classified trades
+      const rows = Object.entries(rawByCondition).map(([condId, rawFills]) => {
+        const appFills = fillsMap[condId] || [];
+        const position = trades.find(t => t.conditionId === condId);
+        const rawCount = rawFills.length;
+        const appCount = appFills.length;
+        const match = rawCount === appCount;
+        const firstFill = rawFills[0];
+        const ts = firstFill?.timestamp || 0;
+        return {
+          conditionId: condId,
+          title: (firstFill?.title || position?.title || "Unknown").slice(0, 50),
+          date: ts ? tsToETDate(ts) : "—",
+          hour: ts ? tsToETHour(ts) : null,
+          rawFills: rawCount,
+          appFills: appCount,
+          inPositions: !!position,
+          result: position?.result || "—",
+          match,
+        };
+      }).sort((a, b) => a.date.localeCompare(b.date));
+
+      setVerifyData({
+        rows,
+        totalMarkets: rows.length,
+        totalRawFills: rows.reduce((s, r) => s + r.rawFills, 0),
+        totalAppFills: rows.reduce((s, r) => s + r.appFills, 0),
+        mismatches: rows.filter(r => !r.match).length,
+        notInPositions: rows.filter(r => !r.inPositions).length,
+      });
+      setVerifyStatus("done");
+    } catch(e) {
+      setVerifyStatus("idle");
+    }
+  }, [walletAddr, fillsMap, trades]);
 
   // ── Fetch PnL ───────────────────────────────────────────────────────────────
   const fetchPnL = useCallback(async () => {
@@ -1083,7 +1148,70 @@ export default function App() {
           BACKTEST
       ══════════════════════════════════════════════════════════ */}
       {mainTab==="bt"&&(
-        <div style={{padding:"16px 20px"}}>
+        <div>
+          {/* Sub-tabs */}
+          <div style={{display:"flex",borderBottom:"1px solid #1e2040",background:"#0a0a1a",paddingLeft:8}}>
+            <button onClick={()=>setBtSubTab("backtest")} style={S.subTab(btSubTab==="backtest")}>BACKTEST</button>
+            <button onClick={()=>{setBtSubTab("verify");}} style={S.subTab(btSubTab==="verify")}>
+              VERIFY {verifyData?("· "+verifyData.mismatches+" mismatches"):""}
+            </button>
+          </div>
+
+          {/* ── VERIFY TAB ── */}
+          {btSubTab==="verify"&&(
+            <div style={{padding:"16px 20px"}}>
+              <div style={{marginBottom:12,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                <button onClick={runVerification} disabled={verifyStatus==="loading"||trades.length===0}
+                  style={S.btn("primary", verifyStatus==="loading"||trades.length===0)}>
+                  {verifyStatus==="loading"?"RUNNING...":"RUN VERIFICATION"}
+                </button>
+                {trades.length===0&&<span style={{fontSize:12,color:"#505878"}}>Fetch a wallet first</span>}
+                {verifyData&&<span style={{fontSize:12,color:"#7080a0"}}>
+                  {verifyData.totalMarkets} markets · {verifyData.totalRawFills} raw fills · {verifyData.totalAppFills} app fills · {verifyData.mismatches} mismatches · {verifyData.notInPositions} not in positions
+                </span>}
+              </div>
+              {verifyData&&(
+                <div style={{background:"#0d0d1f",border:"1px solid #1e2040",borderRadius:2,overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,fontFamily:"'JetBrains Mono',monospace"}}>
+                    <thead>
+                      <tr style={{borderBottom:"1px solid #1e2040",background:"#111128"}}>
+                        {["STATUS","MARKET","DATE","HOUR","RAW FILLS","APP FILLS","IN POSITIONS","RESULT"].map(h=>(
+                          <th key={h} style={{textAlign:"left",padding:"6px 10px",fontSize:10,letterSpacing:2,color:"#7080a0",fontWeight:"normal",whiteSpace:"nowrap"}}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {verifyData.rows.map((r,i)=>{
+                        const statusColor = !r.inPositions ? "#505878" : r.match ? "#00ff9d" : "#ff4d6d";
+                        const statusIcon = !r.inPositions ? "—" : r.match ? "✓" : "✗";
+                        const rowBg = i%2===0?"#0a0a1a":"#0d0d1f";
+                        return(
+                          <tr key={r.conditionId} style={{borderBottom:"1px solid #131330",background:rowBg}}>
+                            <td style={{padding:"5px 10px",color:statusColor,fontWeight:"bold",fontSize:13}}>{statusIcon}</td>
+                            <td style={{padding:"5px 10px",color:"#c0cce0",maxWidth:260,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.title}</td>
+                            <td style={{padding:"5px 10px",color:"#7080a0",whiteSpace:"nowrap"}}>{r.date}</td>
+                            <td style={{padding:"5px 10px",color:"#7080a0"}}>{r.hour!==null?HOUR_LABELS[r.hour]:"—"}</td>
+                            <td style={{padding:"5px 10px",color:"#ffffff",textAlign:"center"}}>{r.rawFills}</td>
+                            <td style={{padding:"5px 10px",color:r.match?"#00ff9d":r.appFills===0?"#505878":"#f0c040",textAlign:"center",fontWeight:r.match?"normal":"bold"}}>{r.appFills}</td>
+                            <td style={{padding:"5px 10px",color:r.inPositions?"#00ff9d":"#ff4d6d",textAlign:"center"}}>{r.inPositions?"YES":"NO"}</td>
+                            <td style={{padding:"5px 10px",color:r.result==="win"?"#00ff9d":r.result==="loss"?"#ff4d6d":"#505878"}}>{r.result.toUpperCase()}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {!verifyData&&verifyStatus!=="loading"&&(
+                <div style={{textAlign:"center",padding:"40px 0",color:"#505880",fontSize:13,letterSpacing:2}}>
+                  CLICK RUN VERIFICATION TO COMPARE RAW API DATA VS APP DATA
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── BACKTEST TAB ── */}
+          {btSubTab==="backtest"&&<div style={{padding:"16px 20px"}}>
           {trades.length===0?(
             <div style={{textAlign:"center",padding:"40px 0",color:"#505880",fontSize:13,letterSpacing:2}}>FETCH WALLET DATA FIRST (FETCH BUTTON IN HEADER)</div>
           ):(
@@ -1653,6 +1781,7 @@ export default function App() {
 
             </div>
           )}
+          </div>}
         </div>
       )}
 
