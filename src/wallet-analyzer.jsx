@@ -206,7 +206,7 @@ export function classifyArchetype(metrics) {
       reasons.push(`Profitable at 50% WR ⇒ edge is $-per-trade, not direction-picking`);
     }
     if (hasMultiEntry) {
-      reasons.push(`${(m.multiEntryPct*100).toFixed(0)}% of markets entered >1x (scalper/MM pattern)`);
+      reasons.push(`${(m.multiEntryPct*100).toFixed(0)}% of markets had BOTH Up and Down entries (two-sided MM pattern)`);
     }
     if (uniformSize) {
       reasons.push(`Pos size CV = ${m.positionCV.toFixed(2)} — uniform sizing ⇒ bot`);
@@ -508,12 +508,12 @@ export default function WalletAnalyzer({ trades, backtest }) {
         <Metric label="Trades" value={metrics.tradeCount.toLocaleString()} />
         <Metric label="Days Active" value={metrics.daysActive.toFixed(1)} />
         <Metric label="Trades/Window" value={metrics.tradesPerWindow.toFixed(1)} />
-        <Metric label="Multi-Entry %" value={`${(metrics.multiEntryPct*100).toFixed(0)}%`} />
+        <Metric label="Two-Sided %" value={`${(metrics.multiEntryPct*100).toFixed(0)}%`} />
         <Metric label="Pos Size CV" value={metrics.positionCV.toFixed(2)} />
         <Metric label="Win Rate" value={metrics.winRate != null ? `${(metrics.winRate*100).toFixed(1)}%` : '—'} />
         <Metric label="Asym Ratio" value={metrics.asymRatio ? `${metrics.asymRatio.toFixed(2)}x` : '—'} />
         <Metric label="Daily Sharpe" value={metrics.sharpeDaily ? metrics.sharpeDaily.toFixed(2) : '—'} />
-        <Metric label="Avg Position" value={`$${metrics.positionMean.toFixed(2)}`} />
+        <Metric label="Avg $/Side" value={`$${metrics.positionMean.toFixed(2)}`} />
         <Metric label="Total PnL" value={`$${Math.round(metrics.totalPnl).toLocaleString()}`} />
       </div>
 
