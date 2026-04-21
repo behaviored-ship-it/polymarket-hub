@@ -2,21 +2,31 @@
 //
 // Wallet Analyzer — archetype classifier + verdict banner for Polymarket Hub.
 //
-// Consumes the existing `trades` state from polymarket-hub.jsx and produces:
-//   1. Archetype label (MM / Scalper-MM / Directional / News-Event / Insufficient Data)
-//   2. Polygun Copyability Score (0-100) with reasoning
-//   3. PolySignal Reverse-Engineer Score (0-100) with reasoning
-//   4. Key discriminating metrics (WR, PnL-per-trade asymmetry, both-sides %, position size CV)
+// Consumes the `trades` state from polymarket-hub.jsx. Each trade is an aggregated
+// closed position with this shape:
 //
-// Pure classifier logic is exported separately so it can be unit-tested or reused
-// in a backend worker later without carrying React along.
+//   {
+//     id, conditionId,
+//     dateET, hourET, timestamp,
+//     result: 'win' | 'loss',
+//     avgPrice,                  // price of shares bought
+//     size,                      // shares remaining after resolution (often 0)
+//     realizedPnl,               // $ profit/loss after settlement
+//     totalBought,               // dollar value of position at entry
+//     title,                     // "Bitcoin Up or Down - April 17, 10:20AM-10:25AM ET"
+//   }
 //
-// Trade shape expected (matches Polymarket closed-positions / fills pattern):
-//   { id, conditionId, eventSlug, side ("Up"|"Down"|outcome str), size,
-//     avgPrice or price, pnl (for closed), ts (epoch sec), ... }
+// IMPORTANT: This is aggregated closed-position data, not raw fills.
+// - No 'outcome' / 'side' field to tell us Up vs Down — limits both-sides detection.
+// - No SELLs by definition — every record is one settled buy.
+// - 'result' gives reliable win/loss; 'realizedPnl' gives the $.
 //
-// The component is defensive — missing fields fall back gracefully; low sample
-// sizes render as "Insufficient Data" rather than a confident wrong answer.
+// Classifier strategy (given the constraints):
+//   - Use WR + PnL skew asymmetry as the primary archetype signal
+//   - A 50% WR with meaningfully positive PnL ⇒ MM-skew / scalper (asymmetric $/trade)
+//   - A >55% WR with positive PnL ⇒ directional edge
+//   - Compute "windows with multiple entries" via conditionId grouping as a proxy for both-sides
+//     (slip-me enters the same market multiple times — directional traders typically don't)
 
 import { useMemo } from 'react';
 
@@ -33,48 +43,40 @@ const C = {
   borderG: '#005528',
 };
 
-// ─── Thresholds (tune based on real data) ───
+// ─── Thresholds ───
 const MIN_TRADES_FOR_CONFIDENT = 300;
 const MIN_DAYS_ACTIVE          = 3;
 
-const WR_FLAT_EPSILON      = 0.015;   // WR within ±1.5% across time blocks = "flat"
-const BOTH_SIDES_MM        = 0.80;    // >80% of windows had both Up and Down → MM-ish
-const POSITION_CV_BOT      = 0.40;    // position size coefficient of variation; <0.40 = uniform = bot
-const ASYM_RATIO_MM_SKEW   = 1.8;     // avg win $ / avg loss $; >1.8 = asymmetric payoff edge
-const BUY_ONLY_THRESHOLD   = 0.95;    // >95% BUY orders with 0 SELLs = no-exit archetype
+const WR_FLAT_EPSILON          = 0.03;    // WR within 50% ± 3% = "coin-flip"
+const WR_DIRECTIONAL_MIN       = 0.55;    // >55% WR suggests directional edge
+const MULTI_ENTRY_MM           = 0.60;    // >60% of markets had multiple entries ⇒ MM-ish
+const POSITION_CV_BOT          = 0.55;    // uniform sizing → bot
+const ASYM_RATIO_MM_SKEW       = 1.5;     // avg win $ / avg loss $ ≥ 1.5 ⇒ asymmetric edge
 
-// ─── Pure helpers ───
+// ─── Helpers (matches actual Polymarket Hub trade shape) ───
 
-/** Extract window key from a trade. eventSlug like "btc-updown-5m-2026-04-21-1025" */
-function windowKeyOf(t) {
-  return t.eventSlug || t.conditionId || 'unknown';
-}
-
-function sideOf(t) {
-  // normalize — polymarket uses "Up"/"Down" as outcome, BUY/SELL as side
-  return (t.outcome || t.side || '').toString();
+function dollarValueOf(t) {
+  return Number(t.totalBought ?? 0);
 }
 
 function priceOf(t) {
-  return Number(t.avgPrice ?? t.price ?? 0);
+  return Number(t.avgPrice ?? 0);
 }
 
-function sizeOf(t) {
-  return Number(t.size ?? t.shares ?? 0);
+function windowKeyOf(t) {
+  // Each conditionId is one Polymarket market (e.g. one 5-min BTC window)
+  return t.conditionId || t.id || 'unknown';
 }
 
-function dollarValueOf(t) {
-  return sizeOf(t) * priceOf(t);
+function pnlOf(t) {
+  return Number(t.realizedPnl ?? 0);
 }
 
-function isBuy(t) {
-  const s = (t.action || t.txType || t.side || '').toString().toUpperCase();
-  return s.includes('BUY') || s === '';  // default to BUY if field missing (Polymarket closed positions are buys)
-}
+function isWin(t)  { return t.result === 'win'; }
+function isLoss(t) { return t.result === 'loss'; }
 
-function isSell(t) {
-  const s = (t.action || t.txType || t.side || '').toString().toUpperCase();
-  return s.includes('SELL');
+function tsOf(t) {
+  return Number(t.timestamp ?? 0);
 }
 
 function mean(xs) {
@@ -90,69 +92,57 @@ function stdev(xs) {
 
 // ─── Metric computation ───
 
-/**
- * Compute the features that discriminate archetypes.
- * Returns null if insufficient data.
- */
 export function computeMetrics(trades) {
   if (!trades || trades.length < 20) return null;
 
-  // Dollar sizes for uniformity detection
   const dollars = trades.map(dollarValueOf).filter(v => v > 0);
   const posMean = mean(dollars);
   const posStdev = stdev(dollars);
   const posCV = posMean > 0 ? posStdev / posMean : 0;
 
-  // BUY/SELL breakdown
-  const buys = trades.filter(isBuy).length;
-  const sells = trades.filter(isSell).length;
-  const buyRatio = trades.length > 0 ? buys / trades.length : 0;
+  const prices = trades.map(priceOf).filter(v => v > 0);
+  const priceMean = mean(prices);
+  const priceStdev = stdev(prices);
 
-  // Windows: group by eventSlug, track if both Up and Down appear
-  const windows = {};
+  // Multi-entry per market — proxy for MM-skew / scalper pattern
+  const windowCounts = {};
   for (const t of trades) {
     const k = windowKeyOf(t);
-    const s = sideOf(t);
-    if (!windows[k]) windows[k] = { up: 0, down: 0 };
-    if (s === 'Up')   windows[k].up++;
-    if (s === 'Down') windows[k].down++;
+    windowCounts[k] = (windowCounts[k] || 0) + 1;
   }
-  const winKeys = Object.keys(windows);
-  const bothSidesCount = winKeys.filter(k => windows[k].up > 0 && windows[k].down > 0).length;
-  const bothSidesPct = winKeys.length > 0 ? bothSidesCount / winKeys.length : 0;
+  const winKeys = Object.keys(windowCounts);
+  const multiEntryCount = winKeys.filter(k => windowCounts[k] > 1).length;
+  const multiEntryPct = winKeys.length > 0 ? multiEntryCount / winKeys.length : 0;
+  const tradesPerWindow = winKeys.length > 0 ? trades.length / winKeys.length : 0;
 
-  // PnL stats (for closed positions with .pnl present)
-  const pnls = trades.map(t => Number(t.pnl ?? 0)).filter(v => Number.isFinite(v));
-  const wins = pnls.filter(p => p > 0);
-  const losses = pnls.filter(p => p < 0);
-  const totalPnl = pnls.reduce((a,b)=>a+b, 0);
-  const winRate = (wins.length + losses.length) > 0
-    ? wins.length / (wins.length + losses.length)
-    : null;
+  // PnL stats — from reliable result + realizedPnl fields
+  const wins   = trades.filter(isWin);
+  const losses = trades.filter(isLoss);
+  const totalPnl = trades.reduce((s, t) => s + pnlOf(t), 0);
+  const decided = wins.length + losses.length;
+  const winRate = decided > 0 ? wins.length / decided : null;
 
-  const avgWin  = wins.length   ? mean(wins)                  : 0;
-  const avgLoss = losses.length ? Math.abs(mean(losses))      : 0;
+  const avgWin  = wins.length   ? mean(wins.map(pnlOf))          : 0;
+  const avgLoss = losses.length ? Math.abs(mean(losses.map(pnlOf))) : 0;
   const asymRatio = avgLoss > 0 ? avgWin / avgLoss : 0;
 
-  // Time span / activity
-  const timestamps = trades.map(t => Number(t.ts ?? t.timestamp ?? 0)).filter(Boolean);
+  // Activity window
+  const timestamps = trades.map(tsOf).filter(Boolean);
   const daysActive = timestamps.length >= 2
     ? (Math.max(...timestamps) - Math.min(...timestamps)) / 86400
     : 0;
-  const tradesPerWindow = winKeys.length > 0 ? trades.length / winKeys.length : 0;
 
-  // Equity curve smoothness (low stdev of daily PnL relative to mean = smooth)
+  // Daily Sharpe
   const byDay = {};
   for (const t of trades) {
-    const ts = Number(t.ts ?? t.timestamp ?? 0);
+    const ts = tsOf(t);
     if (!ts) continue;
     const day = Math.floor(ts / 86400);
-    byDay[day] = (byDay[day] || 0) + Number(t.pnl ?? 0);
+    byDay[day] = (byDay[day] || 0) + pnlOf(t);
   }
   const dailyPnls = Object.values(byDay);
   const dailyMean = mean(dailyPnls);
   const dailyStd = stdev(dailyPnls);
-  // Sharpe-like (daily); positive and high = smooth upward grind
   const sharpeDaily = dailyStd > 0 ? dailyMean / dailyStd : 0;
 
   return {
@@ -160,16 +150,16 @@ export function computeMetrics(trades) {
     windowCount: winKeys.length,
     daysActive,
     tradesPerWindow,
-    buyCount: buys,
-    sellCount: sells,
-    buyRatio,
-    bothSidesPct,
+    multiEntryPct,
     positionMean: posMean,
     positionStdev: posStdev,
     positionCV: posCV,
+    priceMean,
+    priceStdev,
     winRate,
     winCount: wins.length,
     lossCount: losses.length,
+    decidedCount: decided,
     totalPnl,
     avgWin,
     avgLoss,
@@ -181,15 +171,6 @@ export function computeMetrics(trades) {
 
 // ─── Archetype classifier ───
 
-/**
- * Classify a wallet into one of:
- *   'insufficient' — not enough data
- *   'mm'           — true market maker (both sides, uniform, equal BUY/SELL)
- *   'mm_skew'      — scalper / MM-skew (both sides, uniform, no SELLs; wins by $-skew)
- *   'directional'  — single-side entries, selective
- *   'news'         — sporadic large trades around catalysts (fallback)
- *   'noise'        — random, no apparent edge
- */
 export function classifyArchetype(metrics) {
   if (!metrics || metrics.tradeCount < MIN_TRADES_FOR_CONFIDENT || metrics.daysActive < MIN_DAYS_ACTIVE) {
     return {
@@ -198,8 +179,10 @@ export function classifyArchetype(metrics) {
       confidence: 0,
       reasons: [
         !metrics ? 'No trades loaded' : null,
-        metrics && metrics.tradeCount < MIN_TRADES_FOR_CONFIDENT ? `Only ${metrics?.tradeCount ?? 0} trades (need ${MIN_TRADES_FOR_CONFIDENT}+)` : null,
-        metrics && metrics.daysActive < MIN_DAYS_ACTIVE ? `Only ${metrics?.daysActive.toFixed(1) ?? 0} days active (need ${MIN_DAYS_ACTIVE}+)` : null,
+        metrics && metrics.tradeCount < MIN_TRADES_FOR_CONFIDENT
+          ? `Only ${metrics?.tradeCount ?? 0} trades (need ${MIN_TRADES_FOR_CONFIDENT}+)` : null,
+        metrics && metrics.daysActive < MIN_DAYS_ACTIVE
+          ? `Only ${metrics?.daysActive.toFixed(1) ?? 0} days active (need ${MIN_DAYS_ACTIVE}+)` : null,
       ].filter(Boolean),
     };
   }
@@ -207,63 +190,62 @@ export function classifyArchetype(metrics) {
   const m = metrics;
   const reasons = [];
 
-  // True MM — two-sided + SELLs ≈ BUYs
-  const buySellBalance = Math.abs(m.buyRatio - 0.5) < 0.10;
-  const uniformSize = m.positionCV < POSITION_CV_BOT;
-  const twoSided = m.bothSidesPct > BOTH_SIDES_MM;
+  const wrIsFlat        = m.winRate != null && Math.abs(m.winRate - 0.5) < WR_FLAT_EPSILON;
+  const wrIsDirectional = m.winRate != null && m.winRate >= WR_DIRECTIONAL_MIN;
+  const hasMultiEntry   = m.multiEntryPct > MULTI_ENTRY_MM;
+  const uniformSize     = m.positionCV < POSITION_CV_BOT;
+  const profitable      = m.totalPnl > 0;
+  const asymmetric      = m.asymRatio >= ASYM_RATIO_MM_SKEW;
 
-  if (twoSided && buySellBalance && uniformSize) {
-    reasons.push(`${(m.bothSidesPct*100).toFixed(0)}% of windows had both Up and Down`);
-    reasons.push(`BUY/SELL ratio near 50/50 (${(m.buyRatio*100).toFixed(0)}% BUY)`);
-    reasons.push(`Position size CV = ${m.positionCV.toFixed(2)} (uniform → automated)`);
-    return { archetype: 'mm', label: 'Market Maker', confidence: 0.9, reasons };
-  }
-
-  // MM-skew / late-window scalper — both sides, but BUY-heavy or BUY-only
-  const buyHeavy = m.buyRatio > BUY_ONLY_THRESHOLD;
-  if (twoSided && buyHeavy && uniformSize) {
-    reasons.push(`${(m.bothSidesPct*100).toFixed(0)}% of windows had both Up and Down (two-sided)`);
-    reasons.push(`${(m.buyRatio*100).toFixed(0)}% BUY orders (no exits — hold to resolution)`);
-    reasons.push(`Position size CV = ${m.positionCV.toFixed(2)} (uniform sizing → bot)`);
-    if (m.asymRatio >= ASYM_RATIO_MM_SKEW) {
-      reasons.push(`Avg win / avg loss = ${m.asymRatio.toFixed(2)}x (asymmetric $-edge)`);
+  // MM-SKEW / SCALPER — 50% WR but profitable via $-skew
+  if (wrIsFlat && profitable && (hasMultiEntry || asymmetric || uniformSize)) {
+    reasons.push(`WR = ${(m.winRate*100).toFixed(1)}% (coin-flip) but PnL = $${Math.round(m.totalPnl).toLocaleString()}`);
+    if (asymmetric) {
+      reasons.push(`Avg win / avg loss = ${m.asymRatio.toFixed(2)}x — asymmetric $ edge, not directional`);
+    } else {
+      reasons.push(`Profitable at 50% WR ⇒ edge is $-per-trade, not direction-picking`);
     }
-    if (m.winRate != null && Math.abs(m.winRate - 0.5) < WR_FLAT_EPSILON) {
-      reasons.push(`WR = ${(m.winRate*100).toFixed(1)}% — not directional; edge is $-per-trade skew`);
+    if (hasMultiEntry) {
+      reasons.push(`${(m.multiEntryPct*100).toFixed(0)}% of markets entered >1x (scalper/MM pattern)`);
+    }
+    if (uniformSize) {
+      reasons.push(`Pos size CV = ${m.positionCV.toFixed(2)} — uniform sizing ⇒ bot`);
     }
     return { archetype: 'mm_skew', label: 'Scalper / MM-Skew', confidence: 0.9, reasons };
   }
 
-  // Directional — rarely trades both sides, varied or uniform sizing, BUY-heavy
-  if (m.bothSidesPct < 0.20) {
-    reasons.push(`Only ${(m.bothSidesPct*100).toFixed(0)}% of windows had both sides (one-directional)`);
+  // DIRECTIONAL
+  if (wrIsDirectional && profitable) {
+    reasons.push(`WR = ${(m.winRate*100).toFixed(1)}% — directional edge`);
+    reasons.push(`$${Math.round(m.totalPnl).toLocaleString()} PnL over ${m.decidedCount} decided trades`);
     reasons.push(`${m.tradesPerWindow.toFixed(1)} trades/window avg`);
-    if (m.winRate != null) reasons.push(`WR = ${(m.winRate*100).toFixed(1)}%`);
-    if (m.sharpeDaily > 0.5) reasons.push(`Smooth upward equity (daily Sharpe ${m.sharpeDaily.toFixed(2)})`);
-    const strong = m.winRate != null && m.winRate > 0.55 && m.totalPnl > 0;
+    if (m.sharpeDaily > 0.8 && m.dailySamples >= 5) {
+      reasons.push(`Daily Sharpe ${m.sharpeDaily.toFixed(2)} — smooth upward equity`);
+    }
+    const strong = m.winRate > 0.58 && m.totalPnl > 500;
     return {
       archetype: 'directional',
       label: strong ? 'Directional Alpha' : 'Directional (weak edge)',
-      confidence: strong ? 0.85 : 0.6,
+      confidence: strong ? 0.9 : 0.7,
       reasons,
     };
   }
 
-  // Fallback — ambiguous / noise
-  reasons.push(`${m.tradeCount} trades, ${(m.bothSidesPct*100).toFixed(0)}% both-sides, ${(m.buyRatio*100).toFixed(0)}% BUY`);
-  if (m.winRate != null) reasons.push(`WR = ${(m.winRate*100).toFixed(1)}%, PnL $${m.totalPnl.toFixed(0)}`);
+  // LOSING
+  if (m.totalPnl < -100) {
+    reasons.push(`Net PnL = $${Math.round(m.totalPnl).toLocaleString()} — losing wallet`);
+    if (m.winRate != null) reasons.push(`WR = ${(m.winRate*100).toFixed(1)}%`);
+    return { archetype: 'losing', label: 'Losing', confidence: 0.85, reasons };
+  }
+
+  // Ambiguous / noise
+  reasons.push(`WR = ${m.winRate != null ? (m.winRate*100).toFixed(1)+'%' : '—'}, PnL = $${Math.round(m.totalPnl).toLocaleString()}`);
+  reasons.push(`${m.tradeCount} trades, ${m.tradesPerWindow.toFixed(1)}/window, pos CV ${m.positionCV.toFixed(2)}`);
   return { archetype: 'noise', label: 'Mixed / Unclassified', confidence: 0.5, reasons };
 }
 
 // ─── Copyability & Reverse-Engineer scores ───
 
-/**
- * Polygun copyability score (0-100). How well does same-block taker-copy
- * preserve this wallet's edge?
- *
- * Inputs: metrics + archetype + optional backtest result.
- * Backtest result (if present): { roi, endBalance, startBalance, skipped, tradesUsed }
- */
 export function scoreCopyability(metrics, arch, backtest) {
   if (!metrics || !arch || arch.archetype === 'insufficient') {
     return { score: 0, verdict: 'unknown', reasons: ['Insufficient data'] };
@@ -271,13 +253,11 @@ export function scoreCopyability(metrics, arch, backtest) {
   let score = 50;
   const reasons = [];
 
-  // Archetype baseline
-  if (arch.archetype === 'mm')          { score -= 40; reasons.push('Market makers earn the spread; taker copy pays it (-40)'); }
   if (arch.archetype === 'mm_skew')     { score -= 35; reasons.push('MM-skew edge requires cheap maker fills; taker copy destroys it (-35)'); }
   if (arch.archetype === 'directional') { score += 25; reasons.push('Directional entries are copyable same-block (+25)'); }
+  if (arch.archetype === 'losing')      { score -= 40; reasons.push('Negative PnL — copying loses money (-40)'); }
   if (arch.archetype === 'noise')       { score -= 20; reasons.push('No clear edge to copy (-20)'); }
 
-  // Backtest is the ground truth if available
   if (backtest && Number.isFinite(backtest.roi)) {
     if (backtest.roi <= -0.5) { score -= 30; reasons.push(`Backtest ROI ${(backtest.roi*100).toFixed(0)}% — copy wipes out (-30)`); }
     else if (backtest.roi <= -0.1) { score -= 15; reasons.push(`Backtest ROI ${(backtest.roi*100).toFixed(0)}% — copy loses money (-15)`); }
@@ -285,9 +265,9 @@ export function scoreCopyability(metrics, arch, backtest) {
     else if (backtest.roi >= 0.05) { score += 10; reasons.push(`Backtest ROI +${(backtest.roi*100).toFixed(0)}% — copy profitable (+10)`); }
   }
 
-  // Sample size / days active boost
   if (metrics.tradeCount > 1000 && metrics.daysActive > 14) {
-    score += 5; reasons.push(`${metrics.tradeCount} trades / ${metrics.daysActive.toFixed(0)}d — statistically meaningful (+5)`);
+    score += 5;
+    reasons.push(`${metrics.tradeCount} trades / ${metrics.daysActive.toFixed(0)}d — statistically meaningful (+5)`);
   }
 
   score = Math.max(0, Math.min(100, Math.round(score)));
@@ -295,10 +275,6 @@ export function scoreCopyability(metrics, arch, backtest) {
   return { score, verdict, reasons };
 }
 
-/**
- * PolySignal reverse-engineer score (0-100). How useful is this wallet as a
- * feature-extraction target for the bot's signal layer?
- */
 export function scoreReverseEngineer(metrics, arch) {
   if (!metrics || !arch || arch.archetype === 'insufficient') {
     return { score: 0, verdict: 'unknown', reasons: ['Insufficient data'] };
@@ -306,23 +282,21 @@ export function scoreReverseEngineer(metrics, arch) {
   let score = 40;
   const reasons = [];
 
-  // Archetype baseline — MM-skew is gold for rule extraction
   if (arch.archetype === 'mm_skew')     { score += 35; reasons.push('MM-skew edge is rule-based and feature-extractable (+35)'); }
   if (arch.archetype === 'directional') { score += 25; reasons.push('Directional decisions map to observable features (+25)'); }
-  if (arch.archetype === 'mm')          { score -= 15; reasons.push('True MM edge is structural (spread/rebates), not predictive (-15)'); }
-  if (arch.archetype === 'noise')       { score -= 30; reasons.push('No discernible strategy to extract (-30)'); }
+  if (arch.archetype === 'losing')      { score -= 30; reasons.push('Losing wallet — no edge to extract (-30)'); }
+  if (arch.archetype === 'noise')       { score -= 25; reasons.push('No discernible strategy (-25)'); }
 
-  // Volume boost — more trades = more statistical power for clustering
   if (metrics.tradeCount > 2000) { score += 15; reasons.push(`${metrics.tradeCount} trades — high statistical power (+15)`); }
   else if (metrics.tradeCount > 500) { score += 8; reasons.push(`${metrics.tradeCount} trades — sufficient for clustering (+8)`); }
 
-  // Profitability — strategies that lose money aren't worth extracting
-  if (metrics.totalPnl > 1000) { score += 10; reasons.push(`Profitable wallet ($${metrics.totalPnl.toFixed(0)}) — edge is real (+10)`); }
-  else if (metrics.totalPnl < 0) { score -= 20; reasons.push(`Losing wallet — no edge to reverse-engineer (-20)`); }
+  if (metrics.totalPnl > 10000) { score += 15; reasons.push(`Highly profitable ($${Math.round(metrics.totalPnl).toLocaleString()}) — edge is real (+15)`); }
+  else if (metrics.totalPnl > 500) { score += 8; reasons.push(`Profitable ($${Math.round(metrics.totalPnl).toLocaleString()}) (+8)`); }
+  else if (metrics.totalPnl < 0) { score -= 20; reasons.push(`Unprofitable — no edge to reverse-engineer (-20)`); }
 
-  // Smooth equity = consistent strategy = extractable
   if (metrics.sharpeDaily > 1.0 && metrics.dailySamples >= 5) {
-    score += 10; reasons.push(`High daily Sharpe (${metrics.sharpeDaily.toFixed(2)}) — consistent strategy (+10)`);
+    score += 10;
+    reasons.push(`High daily Sharpe (${metrics.sharpeDaily.toFixed(2)}) — consistent strategy (+10)`);
   }
 
   score = Math.max(0, Math.min(100, Math.round(score)));
@@ -441,8 +415,7 @@ const S = {
   },
 };
 
-function scoreColor(score, inverted = false) {
-  // For copyability: high=good=green. For reverse-engineer: high=good=green.
+function scoreColor(score) {
   if (score >= 65) return C.green;
   if (score >= 40) return C.gold;
   return C.red;
@@ -456,16 +429,6 @@ function verdictLabel(archetype, copy, reveng) {
   return { text: 'REVIEW', color: C.muted };
 }
 
-/**
- * Main component — drop this anywhere in polymarket-hub.jsx, ideally right
- * after the HISTORY/status banner and before the tab nav, so the verdict is
- * the first thing visible after fetch.
- *
- * Props:
- *   trades   — array of loaded trades (from existing state)
- *   backtest — optional { roi, endBalance, startBalance } from current Backtest state.
- *              Pass whatever you currently have; nulls are fine.
- */
 export default function WalletAnalyzer({ trades, backtest }) {
   const metrics  = useMemo(() => computeMetrics(trades || []), [trades]);
   const arch     = useMemo(() => classifyArchetype(metrics), [metrics]);
@@ -545,21 +508,19 @@ export default function WalletAnalyzer({ trades, backtest }) {
         <Metric label="Trades" value={metrics.tradeCount.toLocaleString()} />
         <Metric label="Days Active" value={metrics.daysActive.toFixed(1)} />
         <Metric label="Trades/Window" value={metrics.tradesPerWindow.toFixed(1)} />
-        <Metric label="Both-Sides %" value={`${(metrics.bothSidesPct*100).toFixed(0)}%`} />
-        <Metric label="BUY Ratio" value={`${(metrics.buyRatio*100).toFixed(0)}%`} />
+        <Metric label="Multi-Entry %" value={`${(metrics.multiEntryPct*100).toFixed(0)}%`} />
         <Metric label="Pos Size CV" value={metrics.positionCV.toFixed(2)} />
         <Metric label="Win Rate" value={metrics.winRate != null ? `${(metrics.winRate*100).toFixed(1)}%` : '—'} />
         <Metric label="Asym Ratio" value={metrics.asymRatio ? `${metrics.asymRatio.toFixed(2)}x` : '—'} />
         <Metric label="Daily Sharpe" value={metrics.sharpeDaily ? metrics.sharpeDaily.toFixed(2) : '—'} />
-        <Metric label="Total PnL" value={`$${metrics.totalPnl.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
+        <Metric label="Avg Position" value={`$${metrics.positionMean.toFixed(2)}`} />
+        <Metric label="Total PnL" value={`$${Math.round(metrics.totalPnl).toLocaleString()}`} />
       </div>
 
-      {arch.archetype !== 'insufficient' && (
-        <div style={S.hint}>
-          Confidence: {Math.round(arch.confidence * 100)}% · reasoning based on trade patterns, not market outcomes.
-          {backtest && Number.isFinite(backtest.roi) ? '' : ' (Run a backtest for copyability to incorporate ROI.)'}
-        </div>
-      )}
+      <div style={S.hint}>
+        Confidence: {Math.round(arch.confidence * 100)}% · reasoning based on aggregated closed positions.
+        {backtest && Number.isFinite(backtest.roi) ? '' : ' (Run a backtest for ROI-adjusted copyability.)'}
+      </div>
     </div>
   );
 }
