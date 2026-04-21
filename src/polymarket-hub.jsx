@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
+import WalletAnalyzer from './wallet-analyzer';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
