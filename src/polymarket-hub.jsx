@@ -1214,7 +1214,7 @@ export default function App() {
             </div>
           )}
 
-        {activeMainTab==="bm"&&<div style={{padding:"0",height:"calc(100vh - 120px)"}}>{walletAddr.trim()?(<iframe src={"https://pixel-perfect-clone-3784.lovable.app/?wallet="+walletAddr.trim()} style={{width:"100%",height:"100%",border:"none"}} title="Bubblemaps" />):(<div style={{textAlign:"center",padding:"80px",color:"#505880",fontSize:13}}>FETCH A WALLET ABOVE TO VIEW ITS BUBBLE MAP</div>)}</div>}
+        {activeMainTab==="bm"&&<div style={{padding:"0",height:"calc(100vh - 120px)"}}><iframe src={"https://pixel-perfect-clone-3784.lovable.app"+(walletAddr.trim()?"?wallet="+walletAddr.trim():"")} style={{width:"100%",height:"100%",border:"none"}} title="Bubblemaps" /></div>}
           {/* ── BACKTEST TAB ── */}
           {btSubTab==="backtest"&&<div style={{padding:"16px 20px"}}>
           {trades.length===0?(
