@@ -901,7 +901,7 @@ export default function App() {
       />
       {/* ── Main tabs ── */}
       <div style={{display:"flex",borderBottom:"1px solid #1e2040",background:"#0d0d1f"}}>
-        {[["wr","WR TRACKER"],["pnl","PnL TRACKER"],["bt","BACKTEST"]].map(([k,l])=>(
+        {[["wr","WR TRACKER"],["pnl","PnL TRACKER"],["bt","BACKTEST"],["bm","BUBBLEMAPS"]].map(([k,l])=>(
           <button key={k} onClick={()=>setMainTab(k)} style={S.mainTab(mainTab===k)}>{l}</button>
         ))}
       </div>
@@ -1214,6 +1214,7 @@ export default function App() {
             </div>
           )}
 
+        {activeMainTab==="bm"&&<div style={{padding:"0",height:"calc(100vh - 120px)"}}>{walletAddr.trim()?(<iframe src={"https://pixel-perfect-clone-3784.lovable.app/?wallet="+walletAddr.trim()} style={{width:"100%",height:"100%",border:"none"}} title="Bubblemaps" />):(<div style={{textAlign:"center",padding:"80px",color:"#505880",fontSize:13}}>FETCH A WALLET ABOVE TO VIEW ITS BUBBLE MAP</div>)}</div>}
           {/* ── BACKTEST TAB ── */}
           {btSubTab==="backtest"&&<div style={{padding:"16px 20px"}}>
           {trades.length===0?(
