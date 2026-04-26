@@ -1214,7 +1214,7 @@ export default function App() {
             </div>
           )}
 
-        {activeMainTab==="bm"&&<div style={{padding:"0",height:"calc(100vh - 120px)"}}><iframe src={"https://pixel-perfect-clone-3784.lovable.app"+(walletAddr.trim()?"?wallet="+walletAddr.trim():"")} style={{width:"100%",height:"100%",border:"none"}} title="Bubblemaps" /></div>}
+        {mainTab==="bm"&&<div style={{padding:"0",height:"calc(100vh - 120px)"}}><iframe src={"https://pixel-perfect-clone-3784.lovable.app"+(walletAddr.trim()?"?wallet="+walletAddr.trim():"")} style={{width:"100%",height:"100%",border:"none"}} title="Bubblemaps" /></div>}
           {/* ── BACKTEST TAB ── */}
           {btSubTab==="backtest"&&<div style={{padding:"16px 20px"}}>
           {trades.length===0?(
