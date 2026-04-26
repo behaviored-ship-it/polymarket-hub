@@ -1151,7 +1151,16 @@ export default function App() {
       {/* ══════════════════════════════════════════════════════════
           BACKTEST
       ══════════════════════════════════════════════════════════ */}
-      {mainTab==="bt"&&(
+      {mainTab==="bm"&&(
+          <div style={{width:"100%",height:"calc(100vh - 120px)",padding:0}}>
+            <iframe
+              src={"https://pixel-perfect-clone-3784.lovable.app/?wallet="+walletAddr.trim()}
+              style={{width:"100%",height:"100%",border:"none"}}
+              title="Bubblemaps"
+            />
+          </div>
+        )}
+        {mainTab==="bt"&&(
         <div>
           {/* Sub-tabs */}
           <div style={{display:"flex",borderBottom:"1px solid #1e2040",background:"#0a0a1a",paddingLeft:8}}>
@@ -1214,7 +1223,6 @@ export default function App() {
             </div>
           )}
 
-        {mainTab==="bm"&&<div style={{padding:"0",height:"calc(100vh - 120px)"}}><iframe src={"https://pixel-perfect-clone-3784.lovable.app"+(walletAddr.trim()?"?wallet="+walletAddr.trim():"")} style={{width:"100%",height:"100%",border:"none"}} title="Bubblemaps" /></div>}
           {/* ── BACKTEST TAB ── */}
           {btSubTab==="backtest"&&<div style={{padding:"16px 20px"}}>
           {trades.length===0?(
