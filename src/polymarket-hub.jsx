@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 import WalletAnalyzer from './wallet-analyzer';
+import PaperTab from './paper/PaperTab.jsx';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
@@ -901,7 +902,7 @@ export default function App() {
       />
       {/* ── Main tabs ── */}
       <div style={{display:"flex",borderBottom:"1px solid #1e2040",background:"#0d0d1f"}}>
-        {[["wr","WR TRACKER"],["pnl","PnL TRACKER"],["bt","BACKTEST"]].map(([k,l])=>(
+        {[["wr","WR TRACKER"],["pnl","PnL TRACKER"],["bt","BACKTEST"],["paper","PAPER"]].map(([k,l])=>(
           <button key={k} onClick={()=>setMainTab(k)} style={S.mainTab(mainTab===k)}>{l}</button>
         ))}
       </div>
@@ -1789,6 +1790,11 @@ export default function App() {
         </div>
       )}
 
+
+      {/* ══════════════════════════════════════════════════════════
+          PAPER TRADER
+      ══════════════════════════════════════════════════════════ */}
+      {mainTab==="paper"&&<PaperTab />}
 
       {/* ── Overlay Naming Modal ── */}
       {pendingCurve&&(
