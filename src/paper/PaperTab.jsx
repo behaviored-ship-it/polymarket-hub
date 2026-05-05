@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { usePaperRegistry } from './usePaperRegistry.js';
 import PaperAddModal from './PaperAddModal.jsx';
+import PaperTraderDetail from './PaperTraderDetail.jsx';
 import { shortAddr } from './registryDefaults.js';
 
 const colors = {
@@ -175,8 +176,11 @@ const dangerBtn = {
 export default function PaperTab() {
   const reg = usePaperRegistry();
   const [showAdd, setShowAdd] = useState(false);
-  // openId reserved for Batch 4 (detail view); for now log to console
-  const onOpen = (id) => { console.log('[paper] open trader detail (Batch 4):', id); };
+  const [openId, setOpenId] = useState(null);
+
+  if (openId) {
+    return <PaperTraderDetail registryId={openId} onBack={() => setOpenId(null)} />;
+  }
 
   return (
     <div style={{ padding: '20px' }}>
@@ -246,7 +250,7 @@ export default function PaperTab() {
               onStop={reg.stopTrader}
               onDelete={reg.deleteTrader}
               onReset={reg.resetTrader}
-              onOpen={onOpen}
+              onOpen={(id) => setOpenId(id)}
             />
           ))}
         </div>
