@@ -902,7 +902,7 @@ export default function App() {
       />
       {/* ── Main tabs ── */}
       <div style={{display:"flex",borderBottom:"1px solid #1e2040",background:"#0d0d1f"}}>
-        {[["wr","WR TRACKER"],["pnl","PnL TRACKER"],["bt","BACKTEST"],["paper","PAPER"]].map(([k,l])=>(
+        {[["wr","WR TRACKER"],["pnl","PnL TRACKER"],["bt","BACKTEST"],["paper","PAPER"],["bm","BUBBLEMAPS"]].map(([k,l])=>(
           <button key={k} onClick={()=>setMainTab(k)} style={S.mainTab(mainTab===k)}>{l}</button>
         ))}
       </div>
@@ -1152,7 +1152,16 @@ export default function App() {
       {/* ══════════════════════════════════════════════════════════
           BACKTEST
       ══════════════════════════════════════════════════════════ */}
-      {mainTab==="bt"&&(
+      {mainTab==="bm"&&(
+          <div style={{width:"100%",height:"calc(100vh - 120px)",padding:0}}>
+            <iframe
+              src={"https://pixel-perfect-clone-3784.lovable.app/?wallet="+walletAddr.trim()}
+              style={{width:"100%",height:"100%",border:"none"}}
+              title="Bubblemaps"
+            />
+          </div>
+        )}
+        {mainTab==="bt"&&(
         <div>
           {/* Sub-tabs */}
           <div style={{display:"flex",borderBottom:"1px solid #1e2040",background:"#0a0a1a",paddingLeft:8}}>
