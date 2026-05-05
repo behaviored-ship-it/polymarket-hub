@@ -8,7 +8,7 @@ const colors = {
 };
 const LIVE_PRICE_INTERVAL_MS = 30_000;
 
-const fmtUsd = (n) => n == null ? '—' : `${n >= 0 ? '+' : ''}$${Math.abs(n).toFixed(2)}`;
+const fmtUsd = (n) => n == null ? '—' : n === 0 ? '$0.00' : `${n > 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`;
 const fmtUsdPlain = (n) => n == null ? '—' : `$${n.toFixed(2)}`;
 const fmtPrice = (n) => n == null ? '—' : n.toFixed(3);
 const fmtShares = (n) => n == null ? '—' : n.toFixed(2);

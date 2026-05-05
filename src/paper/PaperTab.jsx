@@ -3,6 +3,19 @@ import { usePaperRegistry } from './usePaperRegistry.js';
 import PaperAddModal from './PaperAddModal.jsx';
 import PaperTraderDetail from './PaperTraderDetail.jsx';
 import { shortAddr } from './registryDefaults.js';
+import { trades as tradesStore, positions as positionsStore } from './usePaperDB.js';
+import { downloadCsv } from './exportCsv.js';
+
+async function exportTraderCsv(registry) {
+  const [ts, ps] = await Promise.all([
+    tradesStore.forRegistry(registry.id),
+    positionsStore.forRegistry(registry.id),
+  ]);
+  const stamp = new Date().toISOString().slice(0, 10);
+  const slug = (registry.nickname || shortAddr(registry.walletAddr)).replace(/[^a-z0-9]+/gi, '-');
+  if (ts.length > 0) downloadCsv(`paper-trades-${slug}-${stamp}.csv`, ts);
+  if (ps.length > 0) downloadCsv(`paper-positions-${slug}-${stamp}.csv`, ps);
+}
 
 const colors = {
   bg: '#080818', panel: '#0d0d1f', border: '#1e2040',
@@ -10,8 +23,8 @@ const colors = {
   dim: '#7080a0', label: '#c0cce0', text: '#fff',
 };
 
-const fmtPct = (n) => n == null ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(1)}%`;
-const fmtUsd = (n) => n == null ? '—' : `${n >= 0 ? '+' : ''}$${Math.abs(n).toFixed(2)}`;
+const fmtPct = (n) => n == null ? '—' : `${n > 0 ? '+' : ''}${n.toFixed(1)}%`;
+const fmtUsd = (n) => n == null ? '—' : n === 0 ? '$0.00' : `${n > 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`;
 const colorFor = (n) => n == null ? colors.dim : n > 0 ? colors.green : n < 0 ? colors.red : colors.dim;
 
 function StatusBadge({ status }) {
@@ -89,8 +102,15 @@ function TraderCard({ card, onPause, onResume, onStop, onDelete, onReset, onOpen
           padding: '6px 0', borderRadius: 3, minWidth: 140,
           boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
         }}>
-          <MenuItem onClick={() => { setMenuOpen(false); onReset(r.id); }}>RESET BALANCE</MenuItem>
-          <MenuItem onClick={() => { setMenuOpen(false); if (window.confirm(`Delete paper trader for ${shortAddr(r.walletAddr)}? This cannot be undone.`)) onDelete(r.id); }} danger>DELETE</MenuItem>
+          <MenuItem onClick={() => { setMenuOpen(false); exportTraderCsv(r); }}>EXPORT CSV</MenuItem>
+          <MenuItem onClick={() => {
+            setMenuOpen(false);
+            if (window.confirm(`Reset ${shortAddr(r.walletAddr)} to $${r.startBalance}? This wipes all trades and positions for this trader.`)) onReset(r.id);
+          }}>RESET</MenuItem>
+          <MenuItem onClick={() => {
+            setMenuOpen(false);
+            if (window.confirm(`Delete paper trader for ${shortAddr(r.walletAddr)}? This cannot be undone — config, trades and positions all gone.`)) onDelete(r.id);
+          }} danger>DELETE</MenuItem>
         </div>
       )}
 

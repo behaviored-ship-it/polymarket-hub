@@ -1,6 +1,7 @@
 import { useMemo, useEffect, useState } from 'react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import { recentEvents, subscribe as subscribeEvents } from './eventLog.js';
+import { useVsActual } from './useVsActual.js';
 
 const colors = {
   panel: '#0d0d1f', border: '#1e2040',
@@ -8,8 +9,8 @@ const colors = {
   dim: '#7080a0', label: '#c0cce0', text: '#fff',
 };
 
-const fmtPct = (n) => n == null ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(1)}%`;
-const fmtUsd = (n) => n == null ? '—' : `${n >= 0 ? '+' : ''}$${Math.abs(n).toFixed(2)}`;
+const fmtPct = (n) => n == null ? '—' : `${n > 0 ? '+' : ''}${n.toFixed(1)}%`;
+const fmtUsd = (n) => n == null ? '—' : n === 0 ? '$0.00' : `${n > 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`;
 const fmtUsdPlain = (n) => n == null ? '—' : `$${n.toFixed(2)}`;
 const colorFor = (n) => n == null ? colors.dim : n > 0 ? colors.green : n < 0 ? colors.red : colors.dim;
 
@@ -98,13 +99,61 @@ function EventRow({ evt }) {
   );
 }
 
-export default function PaperOverview({ registry, stats }) {
+function VsActualBanner({ registry, positions: ps, trades: ts }) {
+  const v = useVsActual(registry, ps, ts);
+  if (v.loading) return (
+    <div style={bannerStyle()}>
+      <span style={{ color: colors.dim, fontSize: 11, letterSpacing: 1 }}>LOADING VS ACTUAL…</span>
+    </div>
+  );
+  if (v.error) return null;
+  if (v.matched === 0) return (
+    <div style={bannerStyle()}>
+      <span style={{ color: colors.dim, fontSize: 11, letterSpacing: 1 }}>
+        VS ACTUAL — waiting for resolved trades to compare
+      </span>
+    </div>
+  );
+  const fricColor = v.frictionUsd >= 0 ? colors.red : colors.green;
+  return (
+    <div style={bannerStyle()}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18, alignItems: 'baseline' }}>
+        <div>
+          <div style={{ fontSize: 9, letterSpacing: 2, color: colors.dim, textTransform: 'uppercase', marginBottom: 2 }}>WALLET MADE (same trades)</div>
+          <div style={{ fontSize: 18, fontWeight: 'bold', color: colorFor(v.leaderRealOnOurTrades) }}>{fmtUsd(v.leaderRealOnOurTrades)}</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 9, letterSpacing: 2, color: colors.dim, textTransform: 'uppercase', marginBottom: 2 }}>YOU WOULD HAVE MADE</div>
+          <div style={{ fontSize: 18, fontWeight: 'bold', color: colorFor(v.paperRealOnSame) }}>{fmtUsd(v.paperRealOnSame)}</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 9, letterSpacing: 2, color: colors.dim, textTransform: 'uppercase', marginBottom: 2 }}>COPY FRICTION</div>
+          <div style={{ fontSize: 18, fontWeight: 'bold', color: fricColor }}>{fmtUsd(-v.frictionUsd)}</div>
+        </div>
+        <div style={{ marginLeft: 'auto', fontSize: 10, color: colors.dim, letterSpacing: 1 }}>
+          {v.matched} matched markets · avg slippage {v.avgSlippageBps == null ? '—' : `${v.avgSlippageBps.toFixed(1)} bps`}
+          {' · '}fees {fmtUsdPlain(v.totalFees)}
+        </div>
+      </div>
+    </div>
+  );
+}
+function bannerStyle() {
+  return {
+    background: '#0a0f1a', border: `1px solid ${colors.border}`,
+    borderLeft: `3px solid ${colors.amber}`,
+    padding: '12px 16px', marginBottom: 12, borderRadius: 2,
+  };
+}
+
+export default function PaperOverview({ registry, stats, positions: regPositions = [], trades: regTrades = [] }) {
   const skewColor = colorFor(stats.realizedPnl);
   const wrPct = stats.winRate;
   const wrColor = wrPct == null ? colors.dim : wrPct >= 60 ? colors.green : wrPct >= 50 ? colors.amber : colors.red;
 
   return (
     <div>
+      <VsActualBanner registry={registry} positions={regPositions} trades={regTrades} />
       {/* ── Top row: Realized P&L + WR/ROI ──────────────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12, marginBottom: 12 }}>
         <div style={{ background: colors.panel, border: `1px solid ${colors.border}`, padding: '18px 20px', borderRadius: 2 }}>

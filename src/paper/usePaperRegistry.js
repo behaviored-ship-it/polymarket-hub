@@ -98,24 +98,28 @@ export function usePaperRegistry() {
   }, [refresh]);
 
   const deleteTrader = useCallback(async (id) => {
-    await registryStore.remove(id);
+    // Hard delete — registry, account, all trades, all positions
+    await trades.deleteForRegistry(id);
+    await positions.deleteForRegistry(id);
     await accounts.remove(id);
-    // trades and positions are kept for now (could add bulk delete later)
+    await registryStore.remove(id);
     await refresh();
   }, [refresh]);
 
   const resetTrader = useCallback(async (id) => {
     const r = await registryStore.get(id);
     if (!r) return;
-    await registryStore.put({ ...r, lastPollTs: 0 });
+    // Reset wipes trades + positions and restores starting balance.
+    // Use this when you want a clean slate for the SAME wallet config.
+    await trades.deleteForRegistry(id);
+    await positions.deleteForRegistry(id);
+    await registryStore.put({ ...r, lastPollTs: 0, status: 'active', pauseReason: null });
     await accounts.put({
       registryId: id,
       cash: r.startBalance,
       peakBalance: r.startBalance,
       createdAt: r.createdAt,
     });
-    // Trades & positions for this registry intentionally NOT deleted —
-    // user can wipe them via DELETE if they want a true clean slate.
     await refresh();
   }, [refresh]);
 

@@ -112,7 +112,7 @@ export default function PaperTraderDetail({ registryId, onBack }) {
       </div>
 
       {/* Body */}
-      {sub === 'overview' && <PaperOverview registry={registry} stats={stats} />}
+      {sub === 'overview' && <PaperOverview registry={registry} stats={stats} positions={regPositions} trades={regTrades} />}
       {sub === 'compare' && <PaperTradeLog trades={regTrades} />}
       {sub === 'positions' && <PaperPositions registry={registry} positions={regPositions} />}
       {sub === 'settings' && <PaperSettings registry={registry} />}

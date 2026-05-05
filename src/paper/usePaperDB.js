@@ -133,6 +133,23 @@ export async function queryByIndex(storeName, indexName, value) {
   return awaitReq(idx.getAll(value));
 }
 
+// Bulk delete by indexed value — used when wiping all rows for a registry.
+export async function deleteByIndex(storeName, indexName, value) {
+  const db = await openDB();
+  const { tx: t, store } = tx(db, storeName, 'readwrite');
+  const idx = store.index(indexName);
+  await new Promise((resolve, reject) => {
+    const req = idx.openCursor(value);
+    req.onsuccess = (e) => {
+      const cursor = e.target.result;
+      if (cursor) { cursor.delete(); cursor.continue(); }
+      else resolve();
+    };
+    req.onerror = () => reject(req.error);
+  });
+  await awaitTx(t);
+}
+
 // ── Convenience helpers per store ────────────────────────────────────────────
 
 export const registry = {
@@ -159,6 +176,7 @@ export const trades = {
   get: (id) => get(STORES.TRADES, id),
   list: () => getAll(STORES.TRADES),
   forRegistry: (registryId) => queryByIndex(STORES.TRADES, 'registryId', registryId),
+  deleteForRegistry: (registryId) => deleteByIndex(STORES.TRADES, 'registryId', registryId),
 };
 
 export const positions = {
@@ -171,6 +189,7 @@ export const positions = {
     const all = await queryByIndex(STORES.POSITIONS, 'registryId', registryId);
     return all.filter((p) => !p.isResolved);
   },
+  deleteForRegistry: (registryId) => deleteByIndex(STORES.POSITIONS, 'registryId', registryId),
 };
 
 export const marketCache = {

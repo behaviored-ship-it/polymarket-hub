@@ -6,7 +6,7 @@ const colors = {
   dim: '#7080a0', label: '#c0cce0', text: '#fff',
 };
 
-const fmtUsd = (n) => n == null ? '—' : `${n >= 0 ? '+' : ''}$${Math.abs(n).toFixed(2)}`;
+const fmtUsd = (n) => n == null ? '—' : n === 0 ? '$0.00' : `${n > 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`;
 const fmtPrice = (n) => n == null ? '—' : n.toFixed(3);
 const colorFor = (n) => n == null ? colors.dim : n > 0 ? colors.green : n < 0 ? colors.red : colors.dim;
 
