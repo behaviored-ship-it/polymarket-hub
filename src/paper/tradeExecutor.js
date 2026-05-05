@@ -224,8 +224,15 @@ export async function pollOnce(registry) {
     log.error(registry.id, `activity fetch failed: ${err.message}`);
     return;
   }
-  // Filter to BUYs only (MVP)
-  const buys = fresh.filter((t) => !t.side || String(t.side).toUpperCase() === 'BUY');
+  // Filter to BUYs in tradeable markets only (MVP).
+  // Activity feed includes non-trade events (rewards, splits, conversions) that
+  // don't have a conditionId — those would spam Gamma with empty queries.
+  const buys = fresh.filter(
+    (t) =>
+      t.conditionId &&
+      t.outcome &&
+      (!t.side || String(t.side).toUpperCase() === 'BUY')
+  );
   for (const t of buys) {
     await executeOnLeaderTrade(registry, t);
   }

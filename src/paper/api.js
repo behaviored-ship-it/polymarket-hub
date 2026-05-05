@@ -50,9 +50,11 @@ export async function fetchActivity(walletAddr, sinceTs = 0, opts = {}) {
 }
 
 // ── CLOB order book ──────────────────────────────────────────────────────────
-export async function fetchOrderBook(tokenId, { useProxy = false } = {}) {
-  const base = useProxy ? API.CLOB_PROXY : API.CLOB_BOOK;
-  const url = `${base}?token_id=${encodeURIComponent(tokenId)}`;
+// Always uses our /api/clob proxy (vite proxies in dev, Vercel function in prod).
+// Direct calls usually work but went through proxy for consistency + CORS safety.
+export async function fetchOrderBook(tokenId) {
+  if (!tokenId) return { asks: [], bids: [] };
+  const url = `${API.CLOB_PROXY}?token_id=${encodeURIComponent(tokenId)}`;
   const data = await getJson(url);
   return {
     asks: Array.isArray(data?.asks) ? data.asks : [],
@@ -70,15 +72,47 @@ async function fetchGammaMarketRaw(conditionId) {
 }
 
 // Returns { yes: tokenId, no: tokenId } looked up by outcome string,
-// NOT by index. Cached in IndexedDB indefinitely (token IDs don't change).
+// NOT by index. Cached in IndexedDB indefinitely on success, briefly on miss
+// (so a single bad market doesn't get re-fetched every 30s poll).
+const NEG_CACHE_TTL_SEC = 600; // 10 min
+
 export async function fetchTokenIds(conditionId) {
+  if (!conditionId) return { yes: null, no: null };
   const cacheKey = `tokens:${conditionId}`;
   const cached = await marketCache.get(cacheKey);
   if (cached?.data) {
-    try { return JSON.parse(cached.data); } catch (_) { /* fall through */ }
+    const ttl = cached.ttlSec;
+    const ageSec = (Date.now() - (cached.fetchedAt ?? 0)) / 1000;
+    const fresh = ttl == null || ageSec < ttl;
+    if (fresh) {
+      try { return JSON.parse(cached.data); } catch (_) { /* refetch */ }
+    }
   }
-  const market = await fetchGammaMarketRaw(conditionId);
-  if (!market?.tokens) return { yes: null, no: null };
+
+  let market = null;
+  try {
+    market = await fetchGammaMarketRaw(conditionId);
+  } catch (err) {
+    // Negative-cache the failure briefly to avoid hammering on every poll
+    await marketCache.put({
+      cacheKey,
+      data: JSON.stringify({ yes: null, no: null }),
+      fetchedAt: Date.now(),
+      ttlSec: NEG_CACHE_TTL_SEC,
+    });
+    return { yes: null, no: null };
+  }
+
+  if (!market?.tokens) {
+    await marketCache.put({
+      cacheKey,
+      data: JSON.stringify({ yes: null, no: null }),
+      fetchedAt: Date.now(),
+      ttlSec: NEG_CACHE_TTL_SEC,
+    });
+    return { yes: null, no: null };
+  }
+
   const tokens = Array.isArray(market.tokens) ? market.tokens : [];
   const yes = tokens.find((t) => String(t.outcome).toLowerCase() === 'yes')?.token_id ?? null;
   const no  = tokens.find((t) => String(t.outcome).toLowerCase() === 'no')?.token_id ?? null;
@@ -87,7 +121,7 @@ export async function fetchTokenIds(conditionId) {
     cacheKey,
     data: JSON.stringify(out),
     fetchedAt: Date.now(),
-    ttlSec: null,
+    ttlSec: null, // permanent — token IDs don't change
   });
   return out;
 }

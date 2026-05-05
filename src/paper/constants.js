@@ -37,10 +37,14 @@ export const STORES = {
 };
 
 // Polymarket API endpoints
+//
+// Activity is the only direct call — it has CORS open and we hit it ~30s/wallet.
+// Everything else goes through our Vercel serverless proxies (mirrored by vite
+// dev proxy in vite.config.js) because Gamma's CORS is intermittent and we don't
+// want browser-blocked spam.
 export const API = {
   ACTIVITY: 'https://data-api.polymarket.com/activity',
-  CLOB_BOOK: 'https://clob.polymarket.com/book',
-  GAMMA_MARKETS: 'https://gamma-api.polymarket.com/markets',
+  GAMMA_MARKETS: '/api/gamma',
   POSITIONS_PROXY: '/api/positions',
   CLOB_PROXY: '/api/clob',
 };
