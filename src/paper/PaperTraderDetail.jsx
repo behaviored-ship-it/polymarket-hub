@@ -4,6 +4,7 @@ import { shortAddr } from './registryDefaults.js';
 import PaperOverview from './PaperOverview.jsx';
 import PaperPositions from './PaperPositions.jsx';
 import PaperTradeLog from './PaperTradeLog.jsx';
+import PaperSettings from './PaperSettings.jsx';
 
 const colors = {
   panel: '#0d0d1f', border: '#1e2040',
@@ -114,7 +115,7 @@ export default function PaperTraderDetail({ registryId, onBack }) {
       {sub === 'overview' && <PaperOverview registry={registry} stats={stats} />}
       {sub === 'compare' && <PaperTradeLog trades={regTrades} />}
       {sub === 'positions' && <PaperPositions registry={registry} positions={regPositions} />}
-      {sub === 'settings' && <Placeholder tab="Settings" />}
+      {sub === 'settings' && <PaperSettings registry={registry} />}
     </div>
   );
 }
