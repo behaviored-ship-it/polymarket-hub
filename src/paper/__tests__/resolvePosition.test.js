@@ -64,6 +64,52 @@ describe('resolvePosition — secondary (Gamma outcomePrices)', () => {
   });
 });
 
+describe('resolvePosition — categorical markets', () => {
+  it('matches by outcome string when outcomes array is provided', () => {
+    const t1Pos = { conditionId: 'c1', outcome: 'T1' };
+    const r = resolvePosition(t1Pos, null, {
+      outcomes: ['T1', 'FULL SENSE'],
+      outcomePrices: ['1', '0'],
+    });
+    expect(r).toEqual({ resolved: true, price: 1.0, source: 'outcomePrices' });
+  });
+
+  it('losing categorical outcome returns 0', () => {
+    const t1Pos = { conditionId: 'c1', outcome: 'T1' };
+    const r = resolvePosition(t1Pos, null, {
+      outcomes: ['T1', 'FULL SENSE'],
+      outcomePrices: ['0', '1'],
+    });
+    expect(r).toEqual({ resolved: true, price: 0.0, source: 'outcomePrices' });
+  });
+
+  it('case-insensitive + trim outcome matching', () => {
+    const r = resolvePosition({ conditionId: 'c1', outcome: '  full sense  ' }, null, {
+      outcomes: ['T1', 'FULL SENSE'],
+      outcomePrices: ['0', '1'],
+    });
+    expect(r.resolved).toBe(true);
+    expect(r.price).toBe(1.0);
+  });
+
+  it('returns not-resolved when outcome string is unknown', () => {
+    const r = resolvePosition({ conditionId: 'c1', outcome: 'GHOST TEAM' }, null, {
+      outcomes: ['T1', 'FULL SENSE'],
+      outcomePrices: ['1', '0'],
+    });
+    expect(r.resolved).toBe(false);
+  });
+
+  it('handles 3+ outcomes', () => {
+    const r = resolvePosition({ conditionId: 'c1', outcome: 'Carlos' }, null, {
+      outcomes: ['Aria', 'Boris', 'Carlos'],
+      outcomePrices: ['0', '0', '1'],
+    });
+    expect(r.resolved).toBe(true);
+    expect(r.price).toBe(1.0);
+  });
+});
+
 describe('layered behavior', () => {
   it('falls back to gamma when redeemable response missing the position', () => {
     const r = resolvePosition(yesPos, [{ conditionId: 'c2', redeemable: true, curPrice: 1 }],

@@ -47,7 +47,21 @@ export function resolvePosition(position, openPositionsResp, gammaResp) {
       .filter((x) => x.p >= WIN_PRICE_THRESHOLD);
     if (winners.length > 1) throw new AmbiguousResolutionError(position.conditionId);
     if (winners.length === 1) {
-      const ourIndex = String(position.outcome).toLowerCase() === 'yes' ? 0 : 1;
+      // Find OUR outcome's index in the market's outcomes array.
+      // Binary markets: outcomes = ['Yes','No'] — our position.outcome is 'Yes' or 'No'.
+      // Categorical: outcomes = ['T1','FULL SENSE',...] — match by string.
+      // Falls back to binary index lookup if outcomes array is missing.
+      const outcomes = Array.isArray(gammaResp.outcomes) ? gammaResp.outcomes : [];
+      const ourOutcome = String(position.outcome ?? '').trim().toLowerCase();
+      let ourIndex = outcomes.findIndex((o) => String(o).trim().toLowerCase() === ourOutcome);
+      if (ourIndex === -1) {
+        // No outcomes array OR no match — fall back to binary assumption.
+        // Don't resolve if we can't be sure (silent return = retry next sweep).
+        if (outcomes.length === 0) {
+          ourIndex = ourOutcome === 'yes' ? 0 : ourOutcome === 'no' ? 1 : -1;
+        }
+      }
+      if (ourIndex === -1) return { resolved: false };
       const won = winners[0].i === ourIndex;
       return { resolved: true, price: won ? 1.0 : 0.0, source: 'outcomePrices' };
     }

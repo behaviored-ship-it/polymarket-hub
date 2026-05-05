@@ -71,21 +71,27 @@ async function fetchGammaMarketRaw(conditionId) {
   return data ?? null;
 }
 
-// Returns { yes: tokenId, no: tokenId } looked up by outcome string,
-// NOT by index. Cached in IndexedDB indefinitely on success, briefly on miss
-// (so a single bad market doesn't get re-fetched every 30s poll).
+// Returns { tokens: { [outcomeLowercase]: tokenId }, outcomes: ['Yes','No' | team names...] }
+// Works for both binary (Yes/No) and categorical (multi-team, multi-option) markets.
+// Cached indefinitely on success, briefly on miss so a single bad market doesn't
+// get re-fetched every 30s poll. Cache key v2 — bumps invalidates old binary-only entries.
 const NEG_CACHE_TTL_SEC = 600; // 10 min
 
+const empty = () => ({ tokens: {}, outcomes: [] });
+
 export async function fetchTokenIds(conditionId) {
-  if (!conditionId) return { yes: null, no: null };
-  const cacheKey = `tokens:${conditionId}`;
+  if (!conditionId) return empty();
+  const cacheKey = `tokens_v2:${conditionId}`;
   const cached = await marketCache.get(cacheKey);
   if (cached?.data) {
     const ttl = cached.ttlSec;
     const ageSec = (Date.now() - (cached.fetchedAt ?? 0)) / 1000;
     const fresh = ttl == null || ageSec < ttl;
     if (fresh) {
-      try { return JSON.parse(cached.data); } catch (_) { /* refetch */ }
+      try {
+        const parsed = JSON.parse(cached.data);
+        if (parsed && typeof parsed.tokens === 'object') return parsed;
+      } catch (_) { /* refetch */ }
     }
   }
 
@@ -93,52 +99,51 @@ export async function fetchTokenIds(conditionId) {
   try {
     market = await fetchGammaMarketRaw(conditionId);
   } catch (err) {
-    // Negative-cache the failure briefly to avoid hammering on every poll
     await marketCache.put({
-      cacheKey,
-      data: JSON.stringify({ yes: null, no: null }),
-      fetchedAt: Date.now(),
-      ttlSec: NEG_CACHE_TTL_SEC,
+      cacheKey, data: JSON.stringify(empty()),
+      fetchedAt: Date.now(), ttlSec: NEG_CACHE_TTL_SEC,
     });
-    return { yes: null, no: null };
+    return empty();
   }
 
   if (!market?.tokens) {
     await marketCache.put({
-      cacheKey,
-      data: JSON.stringify({ yes: null, no: null }),
-      fetchedAt: Date.now(),
-      ttlSec: NEG_CACHE_TTL_SEC,
+      cacheKey, data: JSON.stringify(empty()),
+      fetchedAt: Date.now(), ttlSec: NEG_CACHE_TTL_SEC,
     });
-    return { yes: null, no: null };
+    return empty();
   }
 
-  const tokens = Array.isArray(market.tokens) ? market.tokens : [];
-  const yes = tokens.find((t) => String(t.outcome).toLowerCase() === 'yes')?.token_id ?? null;
-  const no  = tokens.find((t) => String(t.outcome).toLowerCase() === 'no')?.token_id ?? null;
-  const out = { yes, no };
+  const tokenList = Array.isArray(market.tokens) ? market.tokens : [];
+  const tokens = {};
+  const outcomes = [];
+  for (const t of tokenList) {
+    const outcome = String(t.outcome ?? '').trim();
+    if (!outcome || !t.token_id) continue;
+    tokens[outcome.toLowerCase()] = t.token_id;
+    outcomes.push(outcome);
+  }
+  const out = { tokens, outcomes };
   await marketCache.put({
-    cacheKey,
-    data: JSON.stringify(out),
-    fetchedAt: Date.now(),
-    ttlSec: null, // permanent — token IDs don't change
+    cacheKey, data: JSON.stringify(out),
+    fetchedAt: Date.now(), ttlSec: null, // permanent — token IDs don't change
   });
   return out;
 }
 
-// Pulls the Gamma market for resolution checks (outcomePrices). NOT cached
-// because resolution state changes.
+// Pulls the Gamma market for resolution checks (outcomePrices + outcomes order).
+// NOT cached because resolution state changes; outcomes are needed to map our
+// position's outcome string to the right index in outcomePrices.
 export async function fetchGammaResolution(conditionId) {
   const market = await fetchGammaMarketRaw(conditionId);
   if (!market) return null;
-  return {
-    outcomePrices: Array.isArray(market.outcomePrices)
-      ? market.outcomePrices
-      : (typeof market.outcomePrices === 'string'
-          ? safeJsonParseArray(market.outcomePrices)
-          : []),
-    closed: !!market.closed,
-  };
+  const outcomePrices = Array.isArray(market.outcomePrices)
+    ? market.outcomePrices
+    : (typeof market.outcomePrices === 'string' ? safeJsonParseArray(market.outcomePrices) : []);
+  const outcomes = Array.isArray(market.outcomes)
+    ? market.outcomes
+    : (typeof market.outcomes === 'string' ? safeJsonParseArray(market.outcomes) : []);
+  return { outcomePrices, outcomes, closed: !!market.closed };
 }
 
 function safeJsonParseArray(s) {

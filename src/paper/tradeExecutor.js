@@ -101,9 +101,15 @@ export async function executeOnLeaderTrade(registry, leaderTrade) {
     const pre = evaluatePreFillGuards(ctx);
     if (pre.skip) return recordSkip(registry, leaderTrade, pre.reason, pre.isPermanent);
 
-    const tokens = await fetchTokenIds(leaderTrade.conditionId);
-    const tokenId = String(leaderTrade.outcome).toLowerCase() === 'yes' ? tokens.yes : tokens.no;
-    if (!tokenId) return recordSkip(registry, leaderTrade, 'TOKEN_NOT_FOUND', true);
+    const tokenInfo = await fetchTokenIds(leaderTrade.conditionId);
+    const outcomeKey = String(leaderTrade.outcome ?? '').trim().toLowerCase();
+    const tokenId = tokenInfo.tokens?.[outcomeKey] ?? null;
+    if (!tokenId) {
+      // Multi-outcome markets where Gamma returns no tokens, or leader's outcome
+      // string doesn't match any token (e.g. abbreviation mismatch). Permanent —
+      // re-fetching won't help and the cache prevents the spam loop.
+      return recordSkip(registry, leaderTrade, 'TOKEN_NOT_FOUND', true);
+    }
 
     let book;
     try {
