@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { usePTStats } from './usePTStats.js';
 import { shortAddr } from './registryDefaults.js';
 import PaperOverview from './PaperOverview.jsx';
+import PaperPositions from './PaperPositions.jsx';
+import PaperTradeLog from './PaperTradeLog.jsx';
 
 const colors = {
   panel: '#0d0d1f', border: '#1e2040',
@@ -59,7 +61,7 @@ function Placeholder({ tab }) {
 export default function PaperTraderDetail({ registryId, onBack }) {
   const [tf, setTf] = useState('all');
   const [sub, setSub] = useState('overview');
-  const { loading, registry, stats } = usePTStats(registryId, tf);
+  const { loading, registry, stats, positions: regPositions = [], trades: regTrades = [] } = usePTStats(registryId, tf);
 
   if (loading) {
     return <div style={{ padding: 40, textAlign: 'center', color: colors.dim, letterSpacing: 2 }}>LOADING…</div>;
@@ -110,8 +112,8 @@ export default function PaperTraderDetail({ registryId, onBack }) {
 
       {/* Body */}
       {sub === 'overview' && <PaperOverview registry={registry} stats={stats} />}
-      {sub === 'compare' && <Placeholder tab="Trade Comparison" />}
-      {sub === 'positions' && <Placeholder tab="Positions" />}
+      {sub === 'compare' && <PaperTradeLog trades={regTrades} />}
+      {sub === 'positions' && <PaperPositions registry={registry} positions={regPositions} />}
       {sub === 'settings' && <Placeholder tab="Settings" />}
     </div>
   );
