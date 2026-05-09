@@ -5,6 +5,8 @@ import PaperTraderDetail from './PaperTraderDetail.jsx';
 import { shortAddr } from './registryDefaults.js';
 import { trades as tradesStore, positions as positionsStore } from './paperStore.js';
 import { downloadCsv } from './exportCsv.js';
+import { useTeam } from './useTeam.js';
+import TeamGate from './TeamGate.jsx';
 
 async function exportTraderCsv(registry) {
   const [ts, ps] = await Promise.all([
@@ -193,10 +195,79 @@ const dangerBtn = {
   padding: '6px 14px', cursor: 'pointer', borderRadius: 3,
 };
 
+function TeamBadge({ team }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  if (team.storageMode !== 'api' || !team.teamCode) return null;
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(team.teamCode);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (_) { /* ignore */ }
+  };
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          background: '#001f10', border: '1px solid #00ff9d', color: '#00ff9d',
+          fontFamily: "'JetBrains Mono',monospace", fontSize: 11, letterSpacing: 2,
+          padding: '6px 12px', cursor: 'pointer', borderRadius: 3,
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+        }}
+        title="Team menu"
+      >
+        team {team.teamCode} ▾
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', right: 0, top: 32, zIndex: 20,
+          background: '#0d0d1f', border: '1px solid #1e2040',
+          padding: '6px 0', borderRadius: 3, minWidth: 180,
+          boxShadow: '0 4px 16px rgba(0,0,0,0.4)',
+          fontFamily: "'JetBrains Mono',monospace",
+        }}>
+          <div onClick={() => { copy(); setOpen(false); }}
+               style={menuItemStyle(false)}>
+            {copied ? '✓ COPIED' : '⎘ COPY CODE'}
+          </div>
+          <div onClick={() => {
+                 if (window.confirm('Leave this team? You can rejoin with the code later.')) {
+                   team.leave();
+                 }
+                 setOpen(false);
+               }}
+               style={menuItemStyle(true)}>
+            ↗ SWITCH TEAM
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+function menuItemStyle(danger) {
+  return {
+    padding: '7px 14px', fontSize: 11, letterSpacing: 1.5,
+    color: danger ? '#ff4d6d' : '#c0cce0', cursor: 'pointer',
+    textTransform: 'uppercase',
+  };
+}
+
 export default function PaperTab() {
+  const team = useTeam();
+  // Hooks always run; usePaperRegistry is a no-op until we have a team in api mode.
+  // (In idb mode, team.needsTeam is always false.)
   const reg = usePaperRegistry();
   const [showAdd, setShowAdd] = useState(false);
   const [openId, setOpenId] = useState(null);
+
+  if (team.needsTeam) {
+    return <TeamGate team={team} />;
+  }
 
   if (openId) {
     return <PaperTraderDetail registryId={openId} onBack={() => setOpenId(null)} />;
@@ -213,24 +284,28 @@ export default function PaperTab() {
             Live copy-trade simulators · ranked by ROI
           </div>
         </div>
-        <button
-          onClick={() => setShowAdd(true)}
-          style={{
-            marginLeft: 'auto',
-            background: '#001f10', border: `1px solid ${colors.green}`, color: colors.green,
-            fontFamily: "'JetBrains Mono',monospace", fontSize: 12, letterSpacing: 2,
-            padding: '8px 16px', cursor: 'pointer', borderRadius: 3, fontWeight: 'bold',
-          }}
-        >+ ADD PAPER TRADER</button>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 10, alignItems: 'center' }}>
+          <TeamBadge team={team} />
+          <button
+            onClick={() => setShowAdd(true)}
+            style={{
+              background: '#001f10', border: `1px solid ${colors.green}`, color: colors.green,
+              fontFamily: "'JetBrains Mono',monospace", fontSize: 12, letterSpacing: 2,
+              padding: '8px 16px', cursor: 'pointer', borderRadius: 3, fontWeight: 'bold',
+            }}
+          >+ ADD PAPER TRADER</button>
+        </div>
       </div>
 
-      <div style={{
-        background: '#1a1400', border: `1px solid ${colors.amber}`,
-        padding: '8px 14px', fontSize: 11, color: colors.amber, letterSpacing: 1,
-        marginBottom: 16, borderRadius: 2,
-      }}>
-        ⓘ TRACKING ACTIVE ONLY WHILE THIS TAB IS OPEN — closing the browser pauses polling. Always-on backend is Phase 2.
-      </div>
+      {team.storageMode === 'idb' && (
+        <div style={{
+          background: '#1a1400', border: `1px solid ${colors.amber}`,
+          padding: '8px 14px', fontSize: 11, color: colors.amber, letterSpacing: 1,
+          marginBottom: 16, borderRadius: 2,
+        }}>
+          ⓘ TRACKING ACTIVE ONLY WHILE THIS TAB IS OPEN — closing the browser pauses polling. Always-on backend is Phase 2.
+        </div>
+      )}
 
       {reg.loading ? (
         <div style={{ textAlign: 'center', padding: '40px 0', color: colors.dim, fontSize: 13, letterSpacing: 2 }}>
