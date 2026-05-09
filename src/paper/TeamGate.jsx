@@ -72,7 +72,6 @@ export default function TeamGate({ team }) {
             <label style={lblStyle}>TEAM NAME <span style={{ color: colors.dim }}>(optional)</span></label>
             <input
               autoFocus value={name} onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Josh + friend"
               style={inpStyle}
             />
             {team.error && <div style={errStyle}>✕ {team.error}</div>}
