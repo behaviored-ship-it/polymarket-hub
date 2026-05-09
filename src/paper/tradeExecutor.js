@@ -2,7 +2,7 @@ import { fetchActivity, fetchOrderBook, fetchTokenIds, fetchOpenPositions, fetch
 import { simulateBuyFill } from './useFillSimulator.js';
 import { evaluatePreFillGuards, evaluateFillGuards } from './evaluateGuards.js';
 import { resolvePosition, AmbiguousResolutionError } from './resolvePosition.js';
-import { registry as registryStore, accounts, trades, positions } from './usePaperDB.js';
+import { registry as registryStore, accounts, trades, positions } from './paperStore.js';
 import { log } from './eventLog.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

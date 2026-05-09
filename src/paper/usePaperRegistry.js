@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { registry as registryStore, accounts, trades, positions } from './usePaperDB.js';
+import { registry as registryStore, accounts, trades, positions } from './paperStore.js';
 import { startScheduler } from './scheduler.js';
 import { subscribe as subscribeEvents } from './eventLog.js';
 import { defaultRegistry } from './registryDefaults.js';

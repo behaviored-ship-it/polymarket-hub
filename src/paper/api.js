@@ -1,5 +1,5 @@
 import { API, ACTIVITY_PAGE_LIMIT } from './constants.js';
-import { marketCache } from './usePaperDB.js';
+import { marketCache } from './paperStore.js';
 
 // Detects "rate limit / try again" responses we should back off on.
 function isRateLimited(resp) {

@@ -3,7 +3,7 @@ import { usePaperRegistry } from './usePaperRegistry.js';
 import PaperAddModal from './PaperAddModal.jsx';
 import PaperTraderDetail from './PaperTraderDetail.jsx';
 import { shortAddr } from './registryDefaults.js';
-import { trades as tradesStore, positions as positionsStore } from './usePaperDB.js';
+import { trades as tradesStore, positions as positionsStore } from './paperStore.js';
 import { downloadCsv } from './exportCsv.js';
 
 async function exportTraderCsv(registry) {

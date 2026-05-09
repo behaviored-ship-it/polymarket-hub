@@ -1,5 +1,5 @@
 import { POLL_TRADES_MS, POLL_RESOLUTION_MS, SCHEDULER_TICK_MS, POLL_JITTER_MS } from './constants.js';
-import { registry as registryStore } from './usePaperDB.js';
+import { registry as registryStore } from './paperStore.js';
 import { pollOnce, resolveOpenForRegistry } from './tradeExecutor.js';
 
 // ── Module state ─────────────────────────────────────────────────────────────

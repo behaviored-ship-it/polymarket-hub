@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { registry as registryStore } from './usePaperDB.js';
+import { registry as registryStore } from './paperStore.js';
 import { DEFAULT_SLIPPAGE_TOLERANCE } from './constants.js';
 
 const colors = {

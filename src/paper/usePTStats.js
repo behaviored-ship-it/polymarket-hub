@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { registry as registryStore, accounts, trades, positions } from './usePaperDB.js';
+import { registry as registryStore, accounts, trades, positions } from './paperStore.js';
 import { subscribe as subscribeEvents } from './eventLog.js';
 import { RANK_MIN_RESOLVED } from './constants.js';
 
