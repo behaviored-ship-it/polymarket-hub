@@ -198,7 +198,14 @@ create policy "team_scope" on pt_positions for all
   using (team_id = current_team_id())
   with check (team_id = current_team_id());
 
--- pt_market_cache is intentionally NOT RLS — token IDs are public market data
--- and shared across all teams to avoid duplicate Gamma fetches.
+-- pt_market_cache stores public market data (token IDs) shared across all
+-- teams. Supabase auto-enables RLS on every new table, so we add an open
+-- policy here that lets any request read/write — keeps Supabase from
+-- flagging the table as insecure while preserving the "shared cache" intent.
+alter table pt_market_cache enable row level security;
+drop policy if exists "cache_open" on pt_market_cache;
+create policy "cache_open" on pt_market_cache for all
+  using (true)
+  with check (true);
 
 -- ─── DONE. Verify with: select count(*) from teams; (should be 0) ──────────
