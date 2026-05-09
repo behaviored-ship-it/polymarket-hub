@@ -12,7 +12,7 @@ create table if not exists teams (
   id          uuid primary key default gen_random_uuid(),
   code        text unique not null check (length(code) between 6 and 12),
   name        text,
-  created_at  timestamptz not null default now()
+  created_at  bigint not null default extract(epoch from now())::bigint
 );
 create index if not exists teams_code_idx on teams(code);
 
@@ -71,7 +71,7 @@ create table if not exists pt_registry (
                               check (status in ('active','paused','stopped')),
   pause_reason                text,
   last_poll_ts                bigint default 0,
-  created_at                  timestamptz not null default now()
+  created_at                  bigint not null default extract(epoch from now())::bigint
 );
 create index if not exists pt_registry_team_idx on pt_registry(team_id, status);
 create index if not exists pt_registry_wallet_idx on pt_registry(wallet_addr);
@@ -116,7 +116,7 @@ create table if not exists pt_trades (
   result              text check (result in ('win','loss') or result is null),
   pnl                 numeric,
   resolved_at         bigint,
-  created_at          timestamptz not null default now()
+  created_at          bigint not null default extract(epoch from now())::bigint
 );
 create index if not exists pt_trades_registry_idx on pt_trades(registry_id, opened_at desc);
 create index if not exists pt_trades_team_idx on pt_trades(team_id);
@@ -149,7 +149,7 @@ create unique index if not exists pt_positions_unique_idx on pt_positions(regist
 create table if not exists pt_market_cache (
   cache_key   text primary key,
   data        jsonb not null,
-  fetched_at  timestamptz not null default now(),
+  fetched_at  bigint not null default (extract(epoch from now()) * 1000)::bigint,
   ttl_sec     int
 );
 
