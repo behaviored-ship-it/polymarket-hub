@@ -6,26 +6,34 @@
 -- This script converts the existing columns in-place. Safe to run on a project
 -- with existing rows — it casts current timestamptz values to Unix seconds/ms
 -- so no data is lost.
+--
+-- NOTE: We drop the default first because Postgres can't auto-cast the
+-- existing `now()` default to bigint during the type change.
 
 alter table teams
+  alter column created_at drop default,
   alter column created_at type bigint using extract(epoch from created_at)::bigint,
   alter column created_at set default extract(epoch from now())::bigint;
 
 alter table pt_registry
+  alter column created_at drop default,
   alter column created_at type bigint using extract(epoch from created_at)::bigint,
   alter column created_at set default extract(epoch from now())::bigint;
 
 alter table pt_accounts
+  alter column created_at drop default,
   alter column created_at type bigint using extract(epoch from created_at)::bigint,
   alter column created_at set default extract(epoch from now())::bigint;
 
 alter table pt_trades
+  alter column created_at drop default,
   alter column created_at type bigint using extract(epoch from created_at)::bigint,
   alter column created_at set default extract(epoch from now())::bigint;
 
 -- pt_market_cache stores fetched_at in MILLISECONDS (Date.now() in JS),
 -- not seconds — the cache TTL math depends on this.
 alter table pt_market_cache
+  alter column fetched_at drop default,
   alter column fetched_at type bigint using (extract(epoch from fetched_at)::bigint * 1000),
   alter column fetched_at set default (extract(epoch from now()) * 1000)::bigint;
 
