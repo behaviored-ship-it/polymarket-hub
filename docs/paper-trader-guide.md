@@ -14,19 +14,31 @@ The headline feature: a **VS ACTUAL** comparison that shows what the real wallet
 
 ---
 
-## Quick start
+## First-time setup — joining the team
 
-1. Go to **polymarket-hub.vercel.app** → click **PAPER** in the top nav (between BACKTEST and BUBBLEMAPS).
-2. Click **+ ADD PAPER TRADER**.
-3. Fill in:
+Paper traders are stored on a shared backend, so two devices (or two people) can see and edit the same set. Access is controlled by a **6-character team code** — no password, no sign-in form, just a code that lives in your browser.
+
+1. Go to **polymarket-hub.vercel.app** → click **PAPER** in the top nav.
+2. First visit shows a gate with two options:
+   - **CREATE TEAM** — generates a new 6-character code, copy and share it
+   - **JOIN TEAM** — paste a code someone shared with you
+3. The code is stored in your browser's localStorage. You don't enter it again on this device.
+4. To add a third device or share with another person: open the team menu (the `team XXXXXX ▾` badge in the header) → COPY CODE → send it to them → they click JOIN TEAM and paste.
+
+⚠ Anyone with the team code has full access to the team's paper traders — there's no per-user privacy within a team. Only share the code with people you trust to add/edit/delete shared paper traders.
+
+## Adding a paper trader
+
+1. Click **+ ADD PAPER TRADER**.
+2. Fill in:
    - **Wallet address** — the 0x... address you want to shadow
    - **Nickname** (optional) — anything memorable like "Whale Alpha" or "Sports Guy"
    - **Starting balance** — your virtual bankroll (default $100)
    - **Sizing** — Fixed $ (same dollar amount every trade) or Percentage (scale with their bet size)
    - **Amount** — preset buttons for $5/$10/$50/$100/$200/$500 or type your own
-4. Click **+ CREATE**. The paper trader starts polling that wallet within ~10 seconds.
+3. Click **+ CREATE**. The paper trader appears in the registry. The backend worker starts polling that wallet within ~30 seconds.
 
-A card appears in the registry grid with `UNRANKED` and `● ACTIVE` badges. As trades happen, stats update live.
+A card appears in the registry grid with `UNRANKED` and `● ACTIVE` badges. As trades happen, stats update live — visible to everyone on the team.
 
 ---
 
@@ -43,7 +55,7 @@ Once you have one or more paper traders set up, the PAPER tab shows them as a gr
 
 Cards are sorted by ROI descending — your best-performing paper trader is first.
 
-A yellow banner at the top reminds you: **"Tracking active only while this tab is open."** This is important — see [Important caveats](#important-caveats) below.
+A small `team XXXXXX ▾` badge in the header shows which team you're viewing. Click it to copy the code or switch teams.
 
 ---
 
@@ -223,18 +235,6 @@ All data lives in your browser's IndexedDB — survives refreshes, but each brow
 
 ## Important caveats (read this!)
 
-### Tab must be open
-The engine runs in your browser tab. **If you close the tab or the browser, polling stops.** When you come back hours later, polling resumes from where it left off — but if the wallet traded during the gap, those trades may be lost forever (the activity API only returns recent activity).
-
-The yellow banner at the top of the PAPER tab is a permanent reminder.
-
-This is the #1 thing that's getting fixed in **Phase 2** (see Roadmap below) — once the engine moves to a server, polling runs 24/7 regardless of who's online.
-
-### Each browser is its own island
-Right now, your data is stored in the browser you used to set it up. If you add a paper trader on your laptop, you won't see it on your phone, and your friend won't see it on his computer. Each device gets its own separate set of paper traders.
-
-Phase 2 fixes this too — both of you will share the same paper trader bucket via a team code.
-
 ### Sells aren't copied yet
 Currently MVP is buys-only. If the leader sells out of a position, your paper position holds until the market resolves (WIN or LOSS at 1.0 / 0.0). Sell-side copying is on the v1.1 list — the engine has the math ready, just hasn't been wired into the UI.
 
@@ -246,20 +246,19 @@ The "Avg poll delay" number in the cumulative panel shows the gap between when t
 
 ---
 
+### Anyone on the team can change anything
+Team members share full read/write access. Your friend can pause, edit settings on, or delete any paper trader you've added — and vice versa. No private "your traders" view. Only invite people you'd be fine with sharing a Google Doc with.
+
+If you outgrow this trust model, the schema already has a `team_id` column ready to convert into a real `user_id` system with email login.
+
 ## Roadmap
 
-**Phase 2 (next big build):**
-- 24/7 polling on a server (Railway) — no more "tab must be open"
-- Two-device, two-user shared bucket via a 6-character team code
-- Same UI, same features, but persistent and multi-device
-
-**Coming after that (v1.1+):**
-- Sell-side copying (so the engine fully tracks the leader's exits, not just entries)
+**Coming next (v1.1+):**
+- Sell-side copying (the engine fully tracks the leader's exits, not just entries)
 - Portfolio-weighted sizing with proper leader balance tracking
 - Head-to-head paper trader comparison ("PK mode")
 - Shareable performance cards
-
-Phase 1 (what you're using now) intentionally shipped without these so we could see how it actually feels in real use before locking the architecture down.
+- Real per-user auth (Supabase Auth) for teams that want privacy between members
 
 ---
 
@@ -276,7 +275,10 @@ Check that:
 Normal at first — the engine is filtering aggressively by default. If most skips are `SLIPPAGE_EXCEEDED`, loosen the slippage tier in Settings. If they're `BLOCKED_CATEGORY` or `BLOCKED_MARKET`, check your Blocklist. If they're `NO_LIQUIDITY` or `RESOLVED_BEFORE_COPY`, those are unavoidable — the market just couldn't be traded at that moment.
 
 **"My data disappeared after clearing browser cache"**
-Yes — that wipes IndexedDB. Phase 2 (server-stored data) fixes this permanently.
+Clearing localStorage drops your team code. Re-enter it via JOIN TEAM on the next visit and the data comes right back — it lives on the backend, not in your browser.
+
+**"I joined the team but I don't see anything"**
+Confirm the code in the header badge matches your friend's. Codes are case-sensitive (the input auto-uppercases). If it still doesn't show, ask your friend to look at the registry grid on their device — if they see traders there, refresh your page.
 
 **"The paper trader is paused and I don't know why"**
 Open Settings → check Auto-Pause on P&L. If a threshold tripped, either raise it or click RESUME on the card. The pause reason is also stored on the registry — visible in the EXPORT CSV.
