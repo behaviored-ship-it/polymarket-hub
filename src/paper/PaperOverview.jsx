@@ -82,7 +82,15 @@ function CopyResultsFeed({ registryId, trades: regTrades = [] }) {
     return subscribeEvents(() => setMemEvents(recentEvents(100, (e) => e.registryId === registryId)));
   }, [registryId]);
 
-  const tradeEvents = useMemo(() => regTrades.map(tradeToEvent), [regTrades]);
+  // TOKEN_NOT_FOUND skips clutter the feed (transient market metadata gaps,
+  // backfill noise from older worker versions). Trade Comparison tab still
+  // shows them for debugging. Other skip reasons are useful signal — keep them.
+  const tradeEvents = useMemo(
+    () => regTrades
+      .filter((t) => !(t.status === 'skipped' && t.skipReason === 'TOKEN_NOT_FOUND'))
+      .map(tradeToEvent),
+    [regTrades]
+  );
 
   const merged = useMemo(() => {
     const seen = new Set();
