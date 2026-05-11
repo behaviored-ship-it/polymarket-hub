@@ -73,15 +73,22 @@ async function fetchGammaMarketRaw(conditionId) {
 
 // Returns { tokens: { [outcomeLowercase]: tokenId }, outcomes: ['Yes','No' | team names...] }
 // Works for both binary (Yes/No) and categorical (multi-team, multi-option) markets.
-// Cached indefinitely on success, briefly on miss so a single bad market doesn't
-// get re-fetched every 30s poll. Cache key v2 — bumps invalidates old binary-only entries.
+//
+// Polymarket has two response shapes:
+//   - Newer (BTC up/down 5-min, sports, most modern): tokens=null, but
+//     clobTokenIds is a parallel array to outcomes.
+//   - Older: tokens=[{outcome, token_id}, ...]
+//
+// We try clobTokenIds first, then fall back to the tokens array.
+// Cache key v3 — bumps to invalidate v2 entries that wrongly said "no tokens"
+// because they only inspected the tokens field.
 const NEG_CACHE_TTL_SEC = 600; // 10 min
 
 const empty = () => ({ tokens: {}, outcomes: [] });
 
 export async function fetchTokenIds(conditionId) {
   if (!conditionId) return empty();
-  const cacheKey = `tokens_v2:${conditionId}`;
+  const cacheKey = `tokens_v3:${conditionId}`;
   const cached = await marketCache.get(cacheKey);
   if (cached?.data) {
     const ttl = cached.ttlSec;
@@ -106,7 +113,7 @@ export async function fetchTokenIds(conditionId) {
     return empty();
   }
 
-  if (!market?.tokens) {
+  if (!market) {
     await marketCache.put({
       cacheKey, data: JSON.stringify(empty()),
       fetchedAt: Date.now(), ttlSec: NEG_CACHE_TTL_SEC,
@@ -114,15 +121,43 @@ export async function fetchTokenIds(conditionId) {
     return empty();
   }
 
-  const tokenList = Array.isArray(market.tokens) ? market.tokens : [];
   const tokens = {};
   const outcomes = [];
-  for (const t of tokenList) {
-    const outcome = String(t.outcome ?? '').trim();
-    if (!outcome || !t.token_id) continue;
-    tokens[outcome.toLowerCase()] = t.token_id;
-    outcomes.push(outcome);
+
+  // New-style: parallel outcomes[] + clobTokenIds[] arrays
+  let outcomesRaw = market.outcomes;
+  if (typeof outcomesRaw === 'string') outcomesRaw = safeJsonParseArray(outcomesRaw);
+  let clobIds = market.clobTokenIds;
+  if (typeof clobIds === 'string') clobIds = safeJsonParseArray(clobIds);
+
+  if (Array.isArray(outcomesRaw) && Array.isArray(clobIds) && outcomesRaw.length === clobIds.length) {
+    for (let i = 0; i < outcomesRaw.length; i++) {
+      const outcome = String(outcomesRaw[i] ?? '').trim();
+      const tokenId = clobIds[i] != null ? String(clobIds[i]).trim() : '';
+      if (!outcome || !tokenId) continue;
+      tokens[outcome.toLowerCase()] = tokenId;
+      outcomes.push(outcome);
+    }
   }
+
+  // Fallback: legacy tokens array shape
+  if (Object.keys(tokens).length === 0 && Array.isArray(market.tokens)) {
+    for (const t of market.tokens) {
+      const outcome = String(t.outcome ?? '').trim();
+      if (!outcome || !t.token_id) continue;
+      tokens[outcome.toLowerCase()] = t.token_id;
+      outcomes.push(outcome);
+    }
+  }
+
+  if (Object.keys(tokens).length === 0) {
+    await marketCache.put({
+      cacheKey, data: JSON.stringify(empty()),
+      fetchedAt: Date.now(), ttlSec: NEG_CACHE_TTL_SEC,
+    });
+    return empty();
+  }
+
   const out = { tokens, outcomes };
   await marketCache.put({
     cacheKey, data: JSON.stringify(out),

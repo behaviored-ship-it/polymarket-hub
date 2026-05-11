@@ -49,7 +49,9 @@ def get_or_fetch_tokens(store, condition_id: str) -> Dict[str, Any]:
     if not condition_id:
         return {"tokens": {}, "outcomes": []}
 
-    cache_key = f"tokens_v2:{condition_id}"
+    # v3 bump: invalidates v2 negative-cached entries that wrongly said "no tokens"
+    # back when we only checked the tokens field instead of clobTokenIds.
+    cache_key = f"tokens_v3:{condition_id}"
     cached = store.get_market_cache(cache_key)
     if cached and cached.get("data"):
         ttl = cached.get("ttlSec")

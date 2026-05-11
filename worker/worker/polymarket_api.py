@@ -114,22 +114,47 @@ def fetch_gamma_market_raw(condition_id: str) -> Optional[dict]:
 
 def fetch_token_ids_uncached(condition_id: str) -> Dict[str, Any]:
     """Returns { tokens: { outcome_lower: token_id }, outcomes: [...] }.
+
+    Polymarket has two response shapes:
+      - Newer (5-min crypto markets, sports, most modern): tokens=None, but
+        clobTokenIds is a parallel array to outcomes.
+      - Older: tokens=[{outcome, token_id}, ...]
+
+    We try clobTokenIds first, then fall back to the tokens array.
     Caching is the executor's job (passes through SupabaseStore.market_cache).
     """
     market = fetch_gamma_market_raw(condition_id)
-    if not market or not market.get("tokens"):
+    if not market:
         return {"tokens": {}, "outcomes": []}
-    tokens_raw = market["tokens"] if isinstance(market["tokens"], list) else []
+
     tokens: Dict[str, str] = {}
-    outcomes: list = []
-    for t in tokens_raw:
-        outcome = str(t.get("outcome", "")).strip()
-        token_id = t.get("token_id")
-        if not outcome or not token_id:
-            continue
-        tokens[outcome.lower()] = token_id
-        outcomes.append(outcome)
-    return {"tokens": tokens, "outcomes": outcomes}
+    outcomes_list: list = []
+
+    outcomes_raw = market.get("outcomes")
+    if isinstance(outcomes_raw, str):
+        outcomes_raw = _safe_json_parse_array(outcomes_raw)
+    clob_ids = market.get("clobTokenIds")
+    if isinstance(clob_ids, str):
+        clob_ids = _safe_json_parse_array(clob_ids)
+
+    if isinstance(outcomes_raw, list) and isinstance(clob_ids, list) and len(outcomes_raw) == len(clob_ids):
+        for outcome, token_id in zip(outcomes_raw, clob_ids):
+            outcome_s = str(outcome).strip()
+            token_s = str(token_id).strip() if token_id is not None else ""
+            if outcome_s and token_s:
+                tokens[outcome_s.lower()] = token_s
+                outcomes_list.append(outcome_s)
+
+    # Fallback: legacy tokens array shape
+    if not tokens and isinstance(market.get("tokens"), list):
+        for t in market["tokens"]:
+            outcome = str(t.get("outcome", "")).strip()
+            token_id = t.get("token_id")
+            if outcome and token_id:
+                tokens[outcome.lower()] = token_id
+                outcomes_list.append(outcome)
+
+    return {"tokens": tokens, "outcomes": outcomes_list}
 
 
 def fetch_gamma_resolution(condition_id: str) -> Optional[dict]:
