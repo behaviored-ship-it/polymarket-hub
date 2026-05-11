@@ -53,14 +53,50 @@ function EquityChart({ equity }) {
   );
 }
 
-function CopyResultsFeed({ registryId }) {
-  const [events, setEvents] = useState(() => recentEvents(50, (e) => e.registryId === registryId));
+// Convert a pt_trades row into the same event shape EventRow expects.
+function tradeToEvent(t) {
+  let kind = 'BUY';
+  if (t.status === 'skipped') kind = 'SKIP';
+  else if (t.status === 'resolved') kind = t.result === 'win' ? 'WIN' : 'LOSS';
+  return {
+    id: t.id,
+    ts: (t.openedAt ?? 0) * 1000,
+    kind,
+    registryId: t.registryId,
+    conditionId: t.conditionId,
+    title: t.title,
+    stake: t.stake,
+    entryPrice: t.entryPrice,
+    pnl: t.pnl,
+    reason: t.skipReason,
+    isPermanent: t.isPermanentSkip,
+  };
+}
+
+function CopyResultsFeed({ registryId, trades: regTrades = [] }) {
+  // Combine in-memory eventLog (idb mode) with derived events from pt_trades
+  // rows (api mode). Both deduped by id, sorted newest first.
+  const [memEvents, setMemEvents] = useState(() => recentEvents(100, (e) => e.registryId === registryId));
   useEffect(() => {
-    setEvents(recentEvents(50, (e) => e.registryId === registryId));
-    return subscribeEvents(() => setEvents(recentEvents(50, (e) => e.registryId === registryId)));
+    setMemEvents(recentEvents(100, (e) => e.registryId === registryId));
+    return subscribeEvents(() => setMemEvents(recentEvents(100, (e) => e.registryId === registryId)));
   }, [registryId]);
 
-  if (events.length === 0) {
+  const tradeEvents = useMemo(() => regTrades.map(tradeToEvent), [regTrades]);
+
+  const merged = useMemo(() => {
+    const seen = new Set();
+    const out = [];
+    for (const e of [...memEvents, ...tradeEvents]) {
+      if (!e?.id || seen.has(e.id)) continue;
+      seen.add(e.id);
+      out.push(e);
+    }
+    out.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    return out.slice(0, 100);
+  }, [memEvents, tradeEvents]);
+
+  if (merged.length === 0) {
     return (
       <div style={{ padding: 24, textAlign: 'center', color: colors.dim, fontSize: 12, letterSpacing: 1 }}>
         WAITING FOR EVENTS…
@@ -69,7 +105,7 @@ function CopyResultsFeed({ registryId }) {
   }
   return (
     <div style={{ maxHeight: 200, overflowY: 'auto' }}>
-      {events.map((e) => (
+      {merged.map((e) => (
         <EventRow key={e.id} evt={e} />
       ))}
     </div>
@@ -222,7 +258,7 @@ export default function PaperOverview({ registry, stats, positions: regPositions
           <div style={{ fontSize: 11, letterSpacing: 3, color: colors.dim, marginBottom: 8, textTransform: 'uppercase', padding: '0 16px' }}>
             COPY RESULTS
           </div>
-          <CopyResultsFeed registryId={registry.id} />
+          <CopyResultsFeed registryId={registry.id} trades={regTrades} />
         </div>
       </div>
     </div>

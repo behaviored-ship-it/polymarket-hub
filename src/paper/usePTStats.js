@@ -1,7 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
-import { registry as registryStore, accounts, trades, positions } from './paperStore.js';
+import { registry as registryStore, accounts, trades, positions, STORAGE_MODE } from './paperStore.js';
 import { subscribe as subscribeEvents } from './eventLog.js';
 import { RANK_MIN_RESOLVED } from './constants.js';
+
+// In api mode the worker writes trades server-side — the browser eventLog never
+// fires, so we poll Supabase to keep the UI in sync. In idb mode the local
+// engine pushes to eventLog and we don't need a poll.
+const API_REFRESH_INTERVAL_MS = 10_000;
 
 // ── Time helpers ─────────────────────────────────────────────────────────────
 function toET(unixSec) {
@@ -157,7 +162,14 @@ export function usePTStats(registryId, timeframe = 'all') {
     const unsub = subscribeEvents((evt) => {
       if (!evt?.registryId || evt.registryId === registryId) refresh();
     });
-    return unsub;
+    let interval = null;
+    if (STORAGE_MODE === 'api') {
+      interval = setInterval(refresh, API_REFRESH_INTERVAL_MS);
+    }
+    return () => {
+      unsub();
+      if (interval) clearInterval(interval);
+    };
   }, [refresh, registryId]);
 
   return { ...data, refresh };
