@@ -113,7 +113,8 @@ export function usePaperRegistry() {
     // Use this when you want a clean slate for the SAME wallet config.
     await trades.deleteForRegistry(id);
     await positions.deleteForRegistry(id);
-    await registryStore.put({ ...r, lastPollTs: 0, status: 'active', pauseReason: null });
+    // lastPollTs = now so RESET doesn't re-trigger a wallet-history backfill
+    await registryStore.put({ ...r, lastPollTs: Math.floor(Date.now() / 1000), status: 'active', pauseReason: null });
     await accounts.put({
       registryId: id,
       cash: r.startBalance,

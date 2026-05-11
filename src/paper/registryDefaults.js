@@ -45,7 +45,9 @@ export function defaultRegistry({ walletAddr, nickname, startBalance, sizingMode
 
     status: 'active',
     pauseReason: null,
-    lastPollTs: 0,
+    // lastPollTs starts at createdAt so the first poll only sees trades made
+    // AFTER this paper trader was set up — not the wallet's whole history.
+    lastPollTs: Math.floor(Date.now() / 1000),
     createdAt: Math.floor(Date.now() / 1000),
   };
 }

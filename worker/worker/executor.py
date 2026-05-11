@@ -305,7 +305,11 @@ def execute_on_leader_trade(store, registry, leader_trade) -> None:
 def poll_once(store, registry) -> None:
     if registry.get("status") != "active":
         return
-    fresh = fetch_activity(registry["walletAddr"], registry.get("lastPollTs", 0))
+    # Defensive floor: never look at trades older than createdAt, even if
+    # lastPollTs got corrupted/reset to 0. Stops backfill spam on existing
+    # rows where lastPollTs is stale.
+    floor_ts = max(registry.get("lastPollTs") or 0, registry.get("createdAt") or 0)
+    fresh = fetch_activity(registry["walletAddr"], floor_ts)
     buys = [
         t for t in fresh
         if t.get("conditionId") and t.get("outcome")
