@@ -63,8 +63,9 @@ export async function fetchOrderBook(tokenId) {
 }
 
 // ── Gamma market metadata + token IDs ────────────────────────────────────────
-async function fetchGammaMarketRaw(conditionId) {
-  const url = `${API.GAMMA_MARKETS}?condition_ids=${encodeURIComponent(conditionId)}`;
+async function fetchGammaMarketRaw(conditionId, { closed = false } = {}) {
+  let url = `${API.GAMMA_MARKETS}?condition_ids=${encodeURIComponent(conditionId)}`;
+  if (closed) url += '&closed=true';
   const data = await getJson(url);
   // Gamma returns either an array or a single object depending on filter shape
   if (Array.isArray(data)) return data[0] ?? null;
@@ -170,7 +171,11 @@ export async function fetchTokenIds(conditionId) {
 // NOT cached because resolution state changes; outcomes are needed to map our
 // position's outcome string to the right index in outcomePrices.
 export async function fetchGammaResolution(conditionId) {
-  const market = await fetchGammaMarketRaw(conditionId);
+  // Gamma's default /markets query excludes closed markets, so short-lived
+  // ones (5-min BTC up/down, etc.) are gone by the time we resolve. Retry
+  // with closed=true if the default returns nothing.
+  let market = await fetchGammaMarketRaw(conditionId);
+  if (!market) market = await fetchGammaMarketRaw(conditionId, { closed: true });
   if (!market) return null;
   const outcomePrices = Array.isArray(market.outcomePrices)
     ? market.outcomePrices
