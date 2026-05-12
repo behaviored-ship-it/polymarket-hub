@@ -90,6 +90,24 @@ function stdev(xs) {
   return Math.sqrt(mean(xs.map(x => (x-m)*(x-m))));
 }
 
+// Linear-interpolated percentile (Excel / numpy "linear" / type 7). p in [0, 100].
+function percentile(sortedAsc, p) {
+  if (!sortedAsc.length) return null;
+  if (sortedAsc.length === 1) return sortedAsc[0];
+  const idx = (p / 100) * (sortedAsc.length - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sortedAsc[lo];
+  return sortedAsc[lo] * (hi - idx) + sortedAsc[hi] * (idx - lo);
+}
+
+function median(sortedAsc) {
+  if (!sortedAsc.length) return null;
+  const mid = Math.floor(sortedAsc.length / 2);
+  if (sortedAsc.length % 2 === 0) return (sortedAsc[mid - 1] + sortedAsc[mid]) / 2;
+  return sortedAsc[mid];
+}
+
 // ─── Metric computation ───
 
 export function computeMetrics(trades) {
@@ -166,6 +184,192 @@ export function computeMetrics(trades) {
     asymRatio,
     sharpeDaily,
     dailySamples: dailyPnls.length,
+  };
+}
+
+// ─── Extended metrics (Batch A — leader-evaluation deep dive) ───
+//
+// computeMetrics above operates on aggregated closed-position records (no SELL
+// rows, no separate buy/close timestamps). The four functions below extend that:
+//
+//   buyPriceDistribution(trades) — P10/P50/P90 of buy prices from the same
+//     closed-positions feed. Friend's "where do 80% of trades happen" framing.
+//   maxDrawdown(trades) — peak-to-trough on the leader's cumulative realized
+//     PnL curve. Same closed-positions feed; uses timestamp + realizedPnl.
+//   buyVsSellSplit(activity) — splits avg price by trade side. Needs the
+//     activity (fills) feed because closed positions are buys only.
+//   holdTimeStats(activity) — pairs BUYs with SELLs in FIFO order within each
+//     (conditionId, outcome) and reports hold time across pairs. Also needs
+//     activity feed.
+//
+// Two feeds (closed positions for the first two, activity for the last two)
+// keeps the existing tested classifier untouched and avoids re-deriving data
+// the closed-positions endpoint already aggregates.
+
+// Buy-price distribution from closed-positions feed (one record = one buy).
+export function buyPriceDistribution(trades) {
+  if (!trades || !trades.length) return null;
+  const prices = trades.map(priceOf).filter(p => p > 0).sort((a, b) => a - b);
+  if (!prices.length) return null;
+  return {
+    p10: percentile(prices, 10),
+    p50: percentile(prices, 50),
+    p90: percentile(prices, 90),
+    min: prices[0],
+    max: prices[prices.length - 1],
+    n: prices.length,
+  };
+}
+
+// Max drawdown over the leader's cumulative realized-PnL curve. Sorts trades
+// by timestamp, walks the cumulative PnL, tracks largest peak-to-trough.
+// Returns absolute $ and % of the peak at which the drawdown was measured.
+export function maxDrawdown(trades) {
+  if (!trades || !trades.length) return null;
+  const ordered = trades
+    .filter(t => Number.isFinite(tsOf(t)) && Number.isFinite(pnlOf(t)))
+    .slice()
+    .sort((a, b) => tsOf(a) - tsOf(b));
+  if (!ordered.length) return null;
+
+  let cum = 0;
+  let peak = 0;
+  let maxDdUsd = 0;
+  let maxDdPctOfPeak = 0;
+
+  for (const t of ordered) {
+    cum += pnlOf(t);
+    if (cum > peak) peak = cum;
+    const dd = peak - cum;
+    if (dd > maxDdUsd) {
+      maxDdUsd = dd;
+      maxDdPctOfPeak = peak > 0 ? dd / peak : 0;
+    }
+  }
+
+  return {
+    maxDrawdownUsd: maxDdUsd,
+    maxDrawdownPct: maxDdPctOfPeak * 100,
+  };
+}
+
+// Activity-feed helpers — different shape from closed positions: each row is
+// one fill with `side`, `avgPrice` (per share), and `totalBought` (shares).
+// Defensive about field names because Polymarket has shifted them historically.
+function activityPrice(t)   { return Number(t.avgPrice ?? t.price ?? 0); }
+function activityShares(t)  { return Number(t.totalBought ?? t.size ?? 0); }
+function activitySide(t)    { return String(t.side ?? '').toUpperCase(); }
+function activityDollars(t) {
+  const p = activityPrice(t);
+  const s = activityShares(t);
+  return p > 0 && s > 0 ? p * s : Number(t.usdcSize ?? 0);
+}
+
+// Average buy price vs average sell price (USD-weighted across fills), with
+// per-side fill counts and dollar volumes. Friend's note: simple mean hides
+// spread traders, but the volume-weighted average tells you where the money
+// actually went in/out — that's what matters for "is it copyable at price X?".
+export function buyVsSellSplit(activity) {
+  if (!activity || !activity.length) return null;
+  let buyWeightedSum = 0, buyDollars = 0, buyCount = 0;
+  let sellWeightedSum = 0, sellDollars = 0, sellCount = 0;
+
+  for (const t of activity) {
+    const p = activityPrice(t);
+    const d = activityDollars(t);
+    if (!(p > 0) || !(d > 0)) continue;
+    const side = activitySide(t);
+    if (side === 'BUY')  { buyWeightedSum  += p * d; buyDollars  += d; buyCount  += 1; }
+    if (side === 'SELL') { sellWeightedSum += p * d; sellDollars += d; sellCount += 1; }
+  }
+
+  return {
+    avgBuyPrice:  buyDollars  > 0 ? buyWeightedSum  / buyDollars  : null,
+    avgSellPrice: sellDollars > 0 ? sellWeightedSum / sellDollars : null,
+    buyCount,
+    sellCount,
+    buyVolumeUsd:  buyDollars,
+    sellVolumeUsd: sellDollars,
+  };
+}
+
+// Hold time: FIFO-pair BUY fills with SELL fills within each (conditionId,
+// outcome). Returns USD-weighted mean + simple median + plain mean in hours.
+// Unmatched BUYs (still open or settled-without-sell) are excluded from the
+// hold-time stat because they have no close timestamp.
+export function holdTimeStats(activity) {
+  if (!activity || !activity.length) {
+    return { meanHoldHours: null, usdWeightedMeanHoldHours: null, medianHoldHours: null, pairCount: 0 };
+  }
+
+  // Bucket events per (conditionId, outcome)
+  const byMarket = new Map();
+  for (const t of activity) {
+    const cid = t.conditionId;
+    if (!cid) continue;
+    const key = `${cid}|${String(t.outcome ?? '').toLowerCase()}`;
+    if (!byMarket.has(key)) byMarket.set(key, []);
+    byMarket.get(key).push(t);
+  }
+
+  const pairs = []; // { holdHours, usd }
+
+  for (const events of byMarket.values()) {
+    events.sort((a, b) => tsOf(a) - tsOf(b));
+    const buyQueue = []; // { ts, shares, dollars }
+
+    for (const e of events) {
+      const ts = tsOf(e);
+      const shares = activityShares(e);
+      const dollars = activityDollars(e);
+      if (!Number.isFinite(ts) || !(shares > 0)) continue;
+
+      if (activitySide(e) === 'BUY') {
+        buyQueue.push({ ts, shares, dollars });
+      } else if (activitySide(e) === 'SELL' && buyQueue.length) {
+        let remaining = shares;
+        while (remaining > 0 && buyQueue.length) {
+          const head = buyQueue[0];
+          const take = Math.min(head.shares, remaining);
+          const takeDollars = head.shares > 0 ? head.dollars * (take / head.shares) : 0;
+          const holdSec = ts - head.ts;
+          if (holdSec > 0) pairs.push({ holdHours: holdSec / 3600, usd: takeDollars });
+          head.shares -= take;
+          head.dollars -= takeDollars;
+          remaining -= take;
+          if (head.shares <= 0) buyQueue.shift();
+        }
+      }
+    }
+  }
+
+  if (!pairs.length) {
+    return { meanHoldHours: null, usdWeightedMeanHoldHours: null, medianHoldHours: null, pairCount: 0 };
+  }
+
+  const totalUsd = pairs.reduce((s, p) => s + p.usd, 0);
+  const usdWeighted = totalUsd > 0
+    ? pairs.reduce((s, p) => s + p.holdHours * (p.usd / totalUsd), 0)
+    : null;
+  const meanHold = pairs.reduce((s, p) => s + p.holdHours, 0) / pairs.length;
+  const sorted = pairs.map(p => p.holdHours).sort((a, b) => a - b);
+
+  return {
+    meanHoldHours: meanHold,
+    usdWeightedMeanHoldHours: usdWeighted,
+    medianHoldHours: median(sorted),
+    pairCount: pairs.length,
+  };
+}
+
+// Convenience wrapper: returns all four extended metrics in one object. UI
+// passes both data shapes; each formula consumes the one it understands.
+export function computeExtendedMetrics({ trades, activity }) {
+  return {
+    buyDistribution: buyPriceDistribution(trades || []),
+    drawdown: maxDrawdown(trades || []),
+    buySellSplit: buyVsSellSplit(activity || []),
+    holdTime: holdTimeStats(activity || []),
   };
 }
 
