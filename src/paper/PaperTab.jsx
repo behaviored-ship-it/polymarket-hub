@@ -257,7 +257,7 @@ function menuItemStyle(danger) {
   };
 }
 
-export default function PaperTab() {
+export default function PaperTab({ onAnalyzeWallet }) {
   const team = useTeam();
   // Hooks always run; usePaperRegistry is a no-op until we have a team in api mode.
   // (In idb mode, team.needsTeam is always false.)
@@ -270,7 +270,7 @@ export default function PaperTab() {
   }
 
   if (openId) {
-    return <PaperTraderDetail registryId={openId} onBack={() => setOpenId(null)} />;
+    return <PaperTraderDetail registryId={openId} onBack={() => setOpenId(null)} onAnalyzeWallet={onAnalyzeWallet} />;
   }
 
   return (

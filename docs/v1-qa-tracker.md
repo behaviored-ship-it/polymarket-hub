@@ -92,6 +92,20 @@ Goal: answer "**should we even copy this wallet?**" before adding it to the pape
 
 ---
 
+## ✅ Batch B — Wallet Analyzer surface
+
+UI wiring for the leader-evaluation work from Batch A.
+
+**Changes:**
+- New top-level tab: `WALLET ANALYZER` in the main nav of [src/polymarket-hub.jsx](../src/polymarket-hub.jsx). Removes the always-rendered `<WalletAnalyzer>` that lived above the tab row and was tied to the WR-tracker wallet fetch.
+- New component [src/WalletAnalyzerTab.jsx](../src/WalletAnalyzerTab.jsx) — own wallet input, parallel fetch of closed positions (for classifier) and activity feed (for extended metrics). Renders existing `WalletAnalyzer` on top and a new `ExtendedMetricsPanel` below with median hold, USD-weighted hold, max drawdown, buy-price P10/P50/P90 + min-max range, and USD-weighted avg buy vs avg sell.
+- New sub-tab `LEADER` in Paper Trader detail view ([src/paper/PaperLeaderAnalysis.jsx](../src/paper/PaperLeaderAnalysis.jsx)). Pulls the same two feeds for the paper trader's leader wallet and surfaces the high-signal disqualifiers: archetype + confidence, copyability score, median hold time, hedged-markets %, avg buy price with distribution, max drawdown. Each tile is color-coded against a verdict (green/gold/red) so you can scan it without reading.
+- Deep-link "Analyze Leader →" button on the LEADER sub-tab. Threads a callback `onAnalyzeWallet(addr)` from App → PaperTab → PaperTraderDetail → PaperLeaderAnalysis. On click it sets `walletAnalyzerSeed` in App, switches `mainTab` to `wa`, and the analyzer's `initialWallet` effect auto-fetches.
+- Bank-size hint in [src/paper/PaperAddModal.jsx](../src/paper/PaperAddModal.jsx). Below the starting-balance input, a static lookup against the friend's $100/$200/$500/$1000/$2500/$5000+ recommendations (~concurrent positions, per-trade size, copy strategy).
+- Time-filter row now also hides on the Leader sub-tab (no time-windowed data there).
+
+**Verified:** 103/103 frontend tests pass; production build clean.
+
 ## ✅ Batch C — sell-side copying
 
 **Reported:** 2026-05-12. Carryover from original V1 ship — MVP launched as buys-only with sell-side on the v1.1 list. Audit on 2026-05-12 confirms the math is in place but the orchestration is not.

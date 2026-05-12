@@ -5,6 +5,7 @@ import PaperOverview from './PaperOverview.jsx';
 import PaperPositions from './PaperPositions.jsx';
 import PaperTradeLog from './PaperTradeLog.jsx';
 import PaperSettings from './PaperSettings.jsx';
+import PaperLeaderAnalysis from './PaperLeaderAnalysis.jsx';
 
 const colors = {
   panel: '#0d0d1f', border: '#1e2040',
@@ -17,6 +18,7 @@ const SUB_TABS = [
   ['overview', 'OVERVIEW'],
   ['compare', 'TRADE COMPARISON'],
   ['positions', 'POSITIONS'],
+  ['leader', 'LEADER'],
   ['settings', 'SETTINGS'],
 ];
 
@@ -59,7 +61,7 @@ function Placeholder({ tab }) {
   );
 }
 
-export default function PaperTraderDetail({ registryId, onBack }) {
+export default function PaperTraderDetail({ registryId, onBack, onAnalyzeWallet }) {
   const [tf, setTf] = useState('all');
   const [sub, setSub] = useState('overview');
   const { loading, registry, stats, positions: regPositions = [], trades: regTrades = [] } = usePTStats(registryId, tf);
@@ -104,8 +106,8 @@ export default function PaperTraderDetail({ registryId, onBack }) {
         ))}
       </div>
 
-      {/* Time filter — hidden on Settings (no data to filter) */}
-      {sub !== 'settings' && (
+      {/* Time filter — hidden on Settings and Leader (no time-windowed data) */}
+      {sub !== 'settings' && sub !== 'leader' && (
         <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
           {TIMEFRAMES.map(([k, l]) => (
             <button key={k} onClick={() => setTf(k)} style={tfBtn(tf === k)}>{l}</button>
@@ -117,6 +119,7 @@ export default function PaperTraderDetail({ registryId, onBack }) {
       {sub === 'overview' && <PaperOverview registry={registry} stats={stats} positions={regPositions} trades={regTrades} />}
       {sub === 'compare' && <PaperTradeLog trades={regTrades} timeframe={tf} />}
       {sub === 'positions' && <PaperPositions registry={registry} positions={regPositions} timeframe={tf} />}
+      {sub === 'leader' && <PaperLeaderAnalysis registry={registry} onAnalyzeWallet={onAnalyzeWallet} />}
       {sub === 'settings' && <PaperSettings registry={registry} />}
     </div>
   );
