@@ -104,17 +104,19 @@ export default function PaperTraderDetail({ registryId, onBack }) {
         ))}
       </div>
 
-      {/* Time filter */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
-        {TIMEFRAMES.map(([k, l]) => (
-          <button key={k} onClick={() => setTf(k)} style={tfBtn(tf === k)}>{l}</button>
-        ))}
-      </div>
+      {/* Time filter — hidden on Settings (no data to filter) */}
+      {sub !== 'settings' && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+          {TIMEFRAMES.map(([k, l]) => (
+            <button key={k} onClick={() => setTf(k)} style={tfBtn(tf === k)}>{l}</button>
+          ))}
+        </div>
+      )}
 
       {/* Body */}
       {sub === 'overview' && <PaperOverview registry={registry} stats={stats} positions={regPositions} trades={regTrades} />}
-      {sub === 'compare' && <PaperTradeLog trades={regTrades} />}
-      {sub === 'positions' && <PaperPositions registry={registry} positions={regPositions} />}
+      {sub === 'compare' && <PaperTradeLog trades={regTrades} timeframe={tf} />}
+      {sub === 'positions' && <PaperPositions registry={registry} positions={regPositions} timeframe={tf} />}
       {sub === 'settings' && <PaperSettings registry={registry} />}
     </div>
   );

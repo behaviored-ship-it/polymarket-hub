@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { inWindow } from './usePTStats.js';
 
 const colors = {
   panel: '#0d0d1f', border: '#1e2040',
@@ -96,18 +97,23 @@ function Cell({ children, color, align = 'left', minWidth }) {
   );
 }
 
-export default function PaperTradeLog({ trades }) {
+export default function PaperTradeLog({ trades, timeframe = 'all' }) {
   const [outcome, setOutcome] = useState('all'); // all | success | failed
   const [side, setSide] = useState('all');       // all | buy | sell
 
+  const scoped = useMemo(
+    () => trades.filter((t) => inWindow(t.openedAt, timeframe)),
+    [trades, timeframe]
+  );
+
   const counts = useMemo(() => {
-    const success = trades.filter((t) => t.status === 'filled' || t.status === 'resolved').length;
-    const failed = trades.filter((t) => t.status === 'skipped').length;
-    return { all: trades.length, success, failed };
-  }, [trades]);
+    const success = scoped.filter((t) => t.status === 'filled' || t.status === 'resolved').length;
+    const failed = scoped.filter((t) => t.status === 'skipped').length;
+    return { all: scoped.length, success, failed };
+  }, [scoped]);
 
   const visible = useMemo(() => {
-    let list = trades.slice();
+    let list = scoped.slice();
     if (outcome === 'success') list = list.filter((t) => t.status === 'filled' || t.status === 'resolved');
     else if (outcome === 'failed') list = list.filter((t) => t.status === 'skipped');
     // side filter — MVP is buys-only so SELL pill always returns nothing,
@@ -115,7 +121,7 @@ export default function PaperTradeLog({ trades }) {
     if (side === 'sell') list = [];
     list.sort((a, b) => (b.openedAt ?? 0) - (a.openedAt ?? 0));
     return list;
-  }, [trades, outcome, side]);
+  }, [scoped, outcome, side]);
 
   return (
     <div>
