@@ -96,16 +96,19 @@ def _safe_json_parse_array(s: str) -> list:
         return []
 
 
-def fetch_gamma_market_raw(condition_id: str) -> Optional[dict]:
+def fetch_gamma_market_raw(condition_id: str, closed: bool = False) -> Optional[dict]:
     if not condition_id:
         return None
     client = get_client()
+    url = f"{GAMMA_MARKETS_URL}?condition_ids={condition_id}"
+    if closed:
+        url += "&closed=true"
     try:
-        resp = client.get(f"{GAMMA_MARKETS_URL}?condition_ids={condition_id}")
+        resp = client.get(url)
         resp.raise_for_status()
         data = resp.json()
     except httpx.HTTPError as e:
-        log.warning("gamma fetch failed for %s: %s", condition_id, e)
+        log.warning("gamma fetch failed for %s (closed=%s): %s", condition_id, closed, e)
         return None
     if isinstance(data, list):
         return data[0] if data else None
@@ -158,7 +161,12 @@ def fetch_token_ids_uncached(condition_id: str) -> Dict[str, Any]:
 
 
 def fetch_gamma_resolution(condition_id: str) -> Optional[dict]:
+    # Gamma's default /markets query excludes closed markets, so short-lived
+    # ones (5-min BTC up/down, etc.) are gone by the time we resolve. Retry
+    # with closed=true if the default returns nothing.
     market = fetch_gamma_market_raw(condition_id)
+    if not market:
+        market = fetch_gamma_market_raw(condition_id, closed=True)
     if not market:
         return None
     op = market.get("outcomePrices")
