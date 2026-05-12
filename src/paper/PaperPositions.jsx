@@ -75,15 +75,20 @@ function OutcomeBadge({ outcome }) {
   );
 }
 
-function ResultBadge({ price }) {
+function ResultBadge({ position }) {
+  const price = position?.resolvedPrice;
   if (price == null) return null;
-  const won = price >= 0.99;
-  const color = won ? colors.green : colors.red;
+  const sold = position?.resolutionSource === 'sold';
+  // For sold positions, P&L sign decides color (sell above entry = green).
+  // For settled, the resolved price itself decides (1.0 = win, else loss).
+  const profitable = sold ? (position?.realizedPnl ?? 0) > 0 : price >= 0.99;
+  const color = profitable ? colors.green : colors.red;
+  const label = sold ? 'SOLD' : (profitable ? 'WIN' : 'LOSS');
   return (
     <span style={{
-      background: won ? '#001f10' : '#200008', border: `1px solid ${color}`, color,
+      background: profitable ? '#001f10' : '#200008', border: `1px solid ${color}`, color,
       fontSize: 9, letterSpacing: 1, padding: '2px 6px', borderRadius: 2, fontWeight: 'bold',
-    }}>{won ? 'WIN' : 'LOSS'}</span>
+    }}>{label}</span>
   );
 }
 
@@ -270,7 +275,7 @@ export default function PaperPositions({ registry, positions: allPositions, time
                     <Cell align="right">{fmtUsdPlain(p.totalCost)}</Cell>
                     <Cell align="right" color={colors.dim}>{when}</Cell>
                     <Cell align="center">
-                      {p.isResolved ? <ResultBadge price={p.resolvedPrice} /> : (
+                      {p.isResolved ? <ResultBadge position={p} /> : (
                         <span style={{
                           background: '#001f10', border: `1px solid ${colors.green}`, color: colors.green,
                           fontSize: 9, letterSpacing: 1, padding: '2px 6px', borderRadius: 2, fontWeight: 'bold',

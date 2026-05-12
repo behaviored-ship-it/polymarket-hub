@@ -34,6 +34,9 @@ export const log = {
   buy: (registryId, trade) =>
     pushEvent({ kind: 'BUY', registryId, conditionId: trade.conditionId, title: trade.title,
                 stake: trade.stake, entryPrice: trade.entryPrice }),
+  sell: (registryId, trade, fullClose) =>
+    pushEvent({ kind: 'SOLD', registryId, conditionId: trade.conditionId, title: trade.title,
+                exitPrice: trade.exitPrice, pnl: trade.pnl, fullClose }),
   skip: (registryId, leaderTrade, reason, isPermanent) =>
     pushEvent({ kind: 'SKIP', registryId, conditionId: leaderTrade.conditionId,
                 title: leaderTrade.title, reason, isPermanent }),

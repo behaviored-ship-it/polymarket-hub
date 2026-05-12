@@ -92,7 +92,7 @@ Goal: answer "**should we even copy this wallet?**" before adding it to the pape
 
 ---
 
-## 🚧 Batch C — sell-side copying
+## ✅ Batch C — sell-side copying
 
 **Reported:** 2026-05-12. Carryover from original V1 ship — MVP launched as buys-only with sell-side on the v1.1 list. Audit on 2026-05-12 confirms the math is in place but the orchestration is not.
 
@@ -103,13 +103,22 @@ Goal: answer "**should we even copy this wallet?**" before adding it to the pape
 - ❌ JS executor mirrors the same buy-only filter ([tradeExecutor.js:240](../src/paper/tradeExecutor.js)).
 - ❌ SELL filter pill in PaperTradeLog returns nothing ([PaperTradeLog.jsx:115](../src/paper/PaperTradeLog.jsx)).
 
+**Design decisions (2026-05-12):**
+
+1. Schema: keep `status='resolved'` for both sold and settled exits, add a new `exit_reason text` column (`'sold' | 'settled' | null` for legacy). `result` continues to mean P&L sign — a sold trade can still be a win (exit > entry) or loss (exit < entry).
+2. **Configurable sell-mirror mode** per paper trader. New `pt_registry.sell_mirror_mode` column: `'proportional'` (default) or `'all_or_nothing'`. Surfaced in the Settings tab. Proportional mirrors the leader's exit fraction exactly; all-or-nothing closes our full position on any leader sell. A third "ignore sells below threshold" mode was considered and deferred.
+3. SELLs bypass entry guards. We always close. Slippage is recorded on the sell row for stats but never causes a skip.
+4. SELLs without a matching open paper position are silently ignored. No `pt_trades` row.
+5. Auto-pause check runs after sells just like after buys.
+6. UI: distinct `SOLD` badge (vs `WIN`/`LOSS`) in PaperPositions and PaperTradeLog, color-coded by P&L sign.
+
 **Scope:**
-- Stop filtering SELL events out (worker + JS).
-- Remove or replace `SELL_FILTERED` guard.
-- On SELL: find matching open paper position by (registry_id, condition_id, outcome), call `simulate_sell_fill` for proceeds, update position state, write a trade row with side='sell', credit account cash.
-- New trade status: `'sold'` (vs `'resolved'` for settled-by-market). Or keep `'resolved'` and add `exit_reason: 'sold' | 'settled'` — design choice.
-- UI: `SOLD` badge in PaperTradeLog and PaperPositions, distinct from `WIN`/`LOSS`.
-- Partial sells: if leader sells 50%, mirror at 50% of our shares (proportional).
+- Migration `004_exit_reason_and_sell_mirror_mode.sql`: add `pt_trades.exit_reason` and `pt_registry.sell_mirror_mode`, backfill `exit_reason='settled'` for existing resolved rows.
+- Worker: stop filtering SELLs out, replace `SELL_FILTERED` with handler, add `execute_on_leader_sell(store, registry, leader_trade)`.
+- JS engine: same in `src/paper/tradeExecutor.js` so IDB mode stays in sync.
+- Settings UI: new "Sell Mirror Mode" control in PaperSettings.jsx.
+- Trade-log UI: wire the existing SELL filter pill, add `SOLD` badge.
+- Tests: unit tests for the sell handler (both modes), `no-matching-position` case, partial-sell proportionality math.
 
 **Order:** runs after Batch A (formulas), before Batch B (UI). Reason: Batch B's Leader Analysis panel and per-trader stats should absorb the new SOLD state in one UI pass.
 

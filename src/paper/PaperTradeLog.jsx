@@ -55,12 +55,14 @@ function ResultBadge({ trade }) {
   }
   if (trade.status === 'resolved') {
     const won = trade.result === 'win';
+    const sold = trade.exitReason === 'sold';
     const c = won ? colors.green : colors.red;
+    const label = sold ? 'SOLD' : (won ? 'WIN' : 'LOSS');
     return (
       <span style={{
         background: won ? '#001f10' : '#200008', border: `1px solid ${c}`, color: c,
         fontSize: 9, letterSpacing: 1, padding: '2px 6px', borderRadius: 2, fontWeight: 'bold',
-      }}>{won ? 'WIN' : 'LOSS'}</span>
+      }}>{label}</span>
     );
   }
   return null;
@@ -116,9 +118,8 @@ export default function PaperTradeLog({ trades, timeframe = 'all' }) {
     let list = scoped.slice();
     if (outcome === 'success') list = list.filter((t) => t.status === 'filled' || t.status === 'resolved');
     else if (outcome === 'failed') list = list.filter((t) => t.status === 'skipped');
-    // side filter — MVP is buys-only so SELL pill always returns nothing,
-    // but keep it for v1.1 parity with GodEye
-    if (side === 'sell') list = [];
+    if (side === 'buy')  list = list.filter((t) => t.side !== 'sell');
+    if (side === 'sell') list = list.filter((t) => t.side === 'sell');
     list.sort((a, b) => (b.openedAt ?? 0) - (a.openedAt ?? 0));
     return list;
   }, [scoped, outcome, side]);
@@ -134,7 +135,6 @@ export default function PaperTradeLog({ trades, timeframe = 'all' }) {
         <FilterPill label="All Sides" active={side === 'all'} onClick={() => setSide('all')} />
         <FilterPill label="BUY" active={side === 'buy'} onClick={() => setSide('buy')} />
         <FilterPill label="SELL" active={side === 'sell'} onClick={() => setSide('sell')} />
-        <span style={{ color: colors.dim, fontSize: 10, marginLeft: 6 }}>(SELL = v1.1)</span>
       </div>
 
       {/* Table */}
