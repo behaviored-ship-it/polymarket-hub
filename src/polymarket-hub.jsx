@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
-import WalletAnalyzer from './wallet-analyzer';
+import WalletAnalyzerTab from './WalletAnalyzerTab.jsx';
 import PaperTab from './paper/PaperTab.jsx';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -246,6 +246,9 @@ export default function App() {
   const [storageStatus, setStorageStatus] = useState("loading");
   const [lastSaved, setLastSaved] = useState(null);
   const [mainTab, setMainTab] = useState("wr");
+  // Wallet Analyzer seed — set by deep-links (e.g. "Analyze Leader →" from Paper Trader).
+  // The tab's initial-wallet useEffect treats a change as a request to auto-fetch.
+  const [walletAnalyzerSeed, setWalletAnalyzerSeed] = useState("");
   const [walletAddr, setWalletAddr] = useState(TARGET_WALLET);
   const [walletLabel, setWalletLabel] = useState("");
   const [fetchStatus, setFetchStatus] = useState("idle");
@@ -896,13 +899,9 @@ export default function App() {
           <button onClick={()=>{if(window.confirm("Clear all stored trades?"))clearStorage();}} style={{background:"none",border:"none",color:"#7080a0",cursor:"pointer",fontSize:12,letterSpacing:1}}>CLEAR STORAGE</button>
         </div>
       )}
-      <WalletAnalyzer
-        trades={trades}
-        backtest={btResult ? { roi: btResult.roi / 100, endBalance: btResult.endBal, startBalance: btResult.startBal } : null}
-      />
       {/* ── Main tabs ── */}
       <div style={{display:"flex",borderBottom:"1px solid #1e2040",background:"#0d0d1f"}}>
-        {[["wr","WR TRACKER"],["pnl","PnL TRACKER"],["bt","BACKTEST"],["paper","PAPER"],["bm","BUBBLEMAPS"]].map(([k,l])=>(
+        {[["wr","WR TRACKER"],["pnl","PnL TRACKER"],["bt","BACKTEST"],["paper","PAPER"],["wa","WALLET ANALYZER"],["bm","BUBBLEMAPS"]].map(([k,l])=>(
           <button key={k} onClick={()=>setMainTab(k)} style={S.mainTab(mainTab===k)}>{l}</button>
         ))}
       </div>
@@ -1803,7 +1802,12 @@ export default function App() {
       {/* ══════════════════════════════════════════════════════════
           PAPER TRADER
       ══════════════════════════════════════════════════════════ */}
-      {mainTab==="paper"&&<PaperTab />}
+      {mainTab==="paper"&&<PaperTab onAnalyzeWallet={(addr)=>{setWalletAnalyzerSeed(addr);setMainTab("wa");}} />}
+
+      {/* ══════════════════════════════════════════════════════════
+          WALLET ANALYZER
+      ══════════════════════════════════════════════════════════ */}
+      {mainTab==="wa"&&<WalletAnalyzerTab initialWallet={walletAnalyzerSeed} />}
 
       {/* ── Overlay Naming Modal ── */}
       {pendingCurve&&(

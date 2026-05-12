@@ -208,16 +208,35 @@ export default function PaperSettings({ registry, onSaved }) {
         <div style={{ marginBottom: 12 }}>
           <span style={label}>WHAT TO COPY</span>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <button disabled style={{ ...modeBtn(false), opacity: 0.5, cursor: 'not-allowed' }}>
-              <div style={{ fontWeight: 'bold' }}>BUYS & SELLS</div>
-              <div style={{ fontSize: 10, opacity: 0.7, marginTop: 3 }}>v1.1</div>
+            <button onClick={() => setField('copyMode', 'buys_and_sells')} style={modeBtn(s.copyMode === 'buys_and_sells')}>
+              <div style={{ fontWeight: 'bold' }}>{s.copyMode === 'buys_and_sells' ? '✓ ' : ''}BUYS & SELLS</div>
+              <div style={{ fontSize: 10, opacity: 0.7, marginTop: 3 }}>full mirror</div>
             </button>
             <button onClick={() => setField('copyMode', 'buys_only')} style={modeBtn(s.copyMode === 'buys_only')}>
               <div style={{ fontWeight: 'bold' }}>{s.copyMode === 'buys_only' ? '✓ ' : ''}BUYS ONLY</div>
-              <div style={{ fontSize: 10, opacity: 0.7, marginTop: 3 }}>MVP default</div>
+              <div style={{ fontSize: 10, opacity: 0.7, marginTop: 3 }}>hold to resolution</div>
             </button>
           </div>
         </div>
+
+        {s.copyMode === 'buys_and_sells' && (
+          <div style={{ marginBottom: 12 }}>
+            <span style={label}>SELL MIRROR MODE</span>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <button onClick={() => setField('sellMirrorMode', 'proportional')} style={modeBtn((s.sellMirrorMode ?? 'proportional') === 'proportional')}>
+                <div style={{ fontWeight: 'bold' }}>{(s.sellMirrorMode ?? 'proportional') === 'proportional' ? '✓ ' : ''}PROPORTIONAL</div>
+                <div style={{ fontSize: 10, opacity: 0.7, marginTop: 3 }}>match their %</div>
+              </button>
+              <button onClick={() => setField('sellMirrorMode', 'all_or_nothing')} style={modeBtn(s.sellMirrorMode === 'all_or_nothing')}>
+                <div style={{ fontWeight: 'bold' }}>{s.sellMirrorMode === 'all_or_nothing' ? '✓ ' : ''}ALL OR NOTHING</div>
+                <div style={{ fontSize: 10, opacity: 0.7, marginTop: 3 }}>full close on any sell</div>
+              </button>
+            </div>
+            <div style={helpText}>
+              Proportional sells the same fraction of your position the leader sold. All-or-nothing closes your full position on any sell — simpler but exits early if they trim in pieces.
+            </div>
+          </div>
+        )}
 
         <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span style={{ fontSize: 12, color: colors.label }}>NEW MARKETS ONLY</span>

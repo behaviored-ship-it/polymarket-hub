@@ -3,6 +3,43 @@ import { isValidWallet } from './registryDefaults.js';
 
 const PRESETS = [5, 10, 50, 100, 200, 500];
 
+// Bank-size sizing recommendations. The thresholds and ranges come from the
+// V1 review write-up — small banks can't realistically copy aggressive
+// scalpers without burning into the floor; large banks can afford full-mirror.
+const BANK_SIZE_TIERS = [
+  { min: 5000, concurrent: 'easy copy',  perTrade: 'any',     strategy: 'all strategies viable' },
+  { min: 2500, concurrent: '≤80',        perTrade: '$25–50',  strategy: 'all strategies viable' },
+  { min: 1000, concurrent: '≤40',        perTrade: '$20–40',  strategy: 'full-copy ok' },
+  { min: 500,  concurrent: '≤25',        perTrade: '$15–30',  strategy: 'selective copy' },
+  { min: 200,  concurrent: '≤14',        perTrade: '$10–25',  strategy: '1-per-market only' },
+  { min: 100,  concurrent: '≤4',         perTrade: '$5–10',   strategy: '1-per-market, conservative' },
+  { min: 0,    concurrent: '≤2',         perTrade: '$2–5',    strategy: 'tight — friction eats most edge below $100' },
+];
+
+function tierFor(balance) {
+  for (const t of BANK_SIZE_TIERS) if (balance >= t.min) return t;
+  return BANK_SIZE_TIERS[BANK_SIZE_TIERS.length - 1];
+}
+
+function BankSizeHint({ balance }) {
+  if (!(balance > 0)) return null;
+  const t = tierFor(balance);
+  return (
+    <div style={{
+      marginTop: 8, padding: '8px 10px',
+      background: '#0a0a1a', border: '1px solid #1e2040', borderRadius: 2,
+      fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: '#8090b0', lineHeight: 1.55,
+    }}>
+      <span style={{ color: '#a0b0c8', letterSpacing: 1.5, textTransform: 'uppercase' }}>
+        At ${balance.toFixed(0)}:
+      </span>{' '}
+      <span style={{ color: '#c0cce0' }}>
+        ~{t.concurrent} concurrent · {t.perTrade}/trade · {t.strategy}
+      </span>
+    </div>
+  );
+}
+
 export default function PaperAddModal({ onCreate, onClose }) {
   const [walletAddr, setWalletAddr] = useState('');
   const [nickname, setNickname] = useState('');
@@ -99,6 +136,7 @@ export default function PaperAddModal({ onCreate, onClose }) {
             onChange={(e) => setStartBalance(e.target.value)}
             style={inp}
           />
+          <BankSizeHint balance={Number(startBalance)} />
         </div>
 
         <div style={{ marginBottom: 14 }}>

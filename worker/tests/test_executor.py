@@ -244,6 +244,205 @@ def test_poll_once_filters_non_buy_and_unrelated(monkeypatch):
     assert store.last_poll_updates[0][1] == 102  # max timestamp seen
 
 
+# ── Sell-side tests ────────────────────────────────────────────────────────
+
+def _book_with_bids():
+    """Order book where a sell at any reasonable size fills cleanly at ~$0.70."""
+    return {
+        "asks": [{"price": "0.72", "size": "1000"}],
+        "bids": [{"price": "0.70", "size": "1000"}],
+    }
+
+
+def _open_position(**overrides):
+    """A paper position from an earlier BUY: 100 shares @ $0.50 entry, $50 total cost."""
+    base = {
+        "id": "r1_0xc1_yes",
+        "registryId": "r1",
+        "teamId": "team1",
+        "conditionId": "0xc1",
+        "outcome": "Yes",
+        "title": "Will X happen?",
+        "tokenId": "tok-yes",
+        "shares": 100,
+        "avgEntryPrice": 0.5,
+        "totalCost": 50.0,
+        "realizedPnl": 0,
+        "isResolved": False,
+    }
+    return {**base, **overrides}
+
+
+def test_sell_all_or_nothing_closes_full_position(monkeypatch):
+    """all_or_nothing mode: any leader SELL fully closes our position."""
+    from worker import executor
+
+    monkeypatch.setattr(executor, "fetch_token_ids_uncached", lambda cid: {
+        "tokens": {"yes": "tok-yes"}, "outcomes": ["Yes"],
+    })
+    monkeypatch.setattr(executor, "fetch_order_book", lambda tid: _book_with_bids())
+    # Should not be called in all_or_nothing mode, but stub safely just in case.
+    monkeypatch.setattr(executor, "fetch_open_positions", lambda addr: [])
+
+    store = FakeStore(positions=[_open_position()])
+    registry = make_registry(copyMode="buys_and_sells", sellMirrorMode="all_or_nothing")
+    leader_sell = make_leader_trade(side="SELL", avgPrice=0.70, totalBought=10)  # 10 shares — small trim
+
+    executor.execute_on_leader_sell(store, registry, leader_sell)
+
+    # Position is fully closed despite leader only selling 10 of (effectively their) shares
+    pos = store.position_upserts[-1]
+    assert pos["shares"] == 0
+    assert pos["isResolved"] is True
+    assert pos["resolutionSource"] == "sold"
+
+    # Sell trade row recorded with exit_reason='sold' and side='sell'
+    sell_trade = next(t for t in store.trades if t.get("side") == "sell")
+    assert sell_trade["exitReason"] == "sold"
+    assert sell_trade["status"] == "resolved"
+    assert sell_trade["pnl"] > 0  # sold at $0.70 from $0.50 entry → win
+
+    # Cash credited (~$70 proceeds minus fee)
+    assert store.account_updates[-1]["cash"] > 100  # started at $100, sold for ~$70 net gain on top of remaining
+
+
+def test_sell_proportional_mirrors_leader_fraction(monkeypatch):
+    """proportional mode: leader sells 25% (50 of 200 shares), so we sell 25% of our 100."""
+    from worker import executor
+
+    monkeypatch.setattr(executor, "fetch_token_ids_uncached", lambda cid: {
+        "tokens": {"yes": "tok-yes"}, "outcomes": ["Yes"],
+    })
+    monkeypatch.setattr(executor, "fetch_order_book", lambda tid: _book_with_bids())
+    # Leader's open-positions snapshot AFTER the sell: 150 shares remain.
+    # Pre-sell holding was 150 + 50 = 200. Fraction = 50/200 = 25%.
+    monkeypatch.setattr(executor, "fetch_open_positions", lambda addr: [
+        {"conditionId": "0xc1", "outcome": "Yes", "size": 150}
+    ])
+
+    store = FakeStore(positions=[_open_position()])
+    registry = make_registry(copyMode="buys_and_sells", sellMirrorMode="proportional")
+    leader_sell = make_leader_trade(side="SELL", avgPrice=0.70, totalBought=50)
+
+    executor.execute_on_leader_sell(store, registry, leader_sell)
+
+    pos = store.position_upserts[-1]
+    # We had 100 shares; sold 25 (25% of 100); 75 remain
+    assert pos["shares"] == pytest.approx(75, abs=0.5)
+    assert pos["isResolved"] is False  # partial close — still open
+    # totalCost shrunk proportionally too: $50 * (1 - 0.25) = $37.50
+    assert pos["totalCost"] == pytest.approx(37.5, abs=0.5)
+
+
+def test_sell_proportional_full_exit_when_leader_has_no_remaining(monkeypatch):
+    """proportional mode: leader's open-positions show zero remaining → 100% close."""
+    from worker import executor
+
+    monkeypatch.setattr(executor, "fetch_token_ids_uncached", lambda cid: {
+        "tokens": {"yes": "tok-yes"}, "outcomes": ["Yes"],
+    })
+    monkeypatch.setattr(executor, "fetch_order_book", lambda tid: _book_with_bids())
+    monkeypatch.setattr(executor, "fetch_open_positions", lambda addr: [])  # nothing left
+
+    store = FakeStore(positions=[_open_position()])
+    registry = make_registry(copyMode="buys_and_sells", sellMirrorMode="proportional")
+    leader_sell = make_leader_trade(side="SELL", avgPrice=0.70, totalBought=100)
+
+    executor.execute_on_leader_sell(store, registry, leader_sell)
+
+    pos = store.position_upserts[-1]
+    assert pos["shares"] == 0
+    assert pos["isResolved"] is True
+
+
+def test_sell_with_no_matching_position_is_silent(monkeypatch):
+    """SELL of a market we never bought → no trade row written, no error raised."""
+    from worker import executor
+
+    monkeypatch.setattr(executor, "fetch_token_ids_uncached", lambda cid: {
+        "tokens": {"yes": "tok-yes"}, "outcomes": ["Yes"],
+    })
+
+    store = FakeStore()  # no positions
+    registry = make_registry(copyMode="buys_and_sells")
+    leader_sell = make_leader_trade(side="SELL", totalBought=50)
+
+    executor.execute_on_leader_sell(store, registry, leader_sell)
+
+    assert len(store.trades) == 0
+    assert len(store.position_upserts) == 0
+
+
+def test_sell_realized_pnl_reflects_actual_basis(monkeypatch):
+    """A losing sell: bought at $0.50, sells at $0.40 → realized loss minus fees."""
+    from worker import executor
+
+    monkeypatch.setattr(executor, "fetch_token_ids_uncached", lambda cid: {
+        "tokens": {"yes": "tok-yes"}, "outcomes": ["Yes"],
+    })
+    monkeypatch.setattr(executor, "fetch_order_book", lambda tid: {
+        "asks": [{"price": "0.42", "size": "1000"}],
+        "bids": [{"price": "0.40", "size": "1000"}],
+    })
+    monkeypatch.setattr(executor, "fetch_open_positions", lambda addr: [])
+
+    store = FakeStore(positions=[_open_position()])
+    registry = make_registry(copyMode="buys_and_sells", sellMirrorMode="all_or_nothing")
+    leader_sell = make_leader_trade(side="SELL", avgPrice=0.40, totalBought=100)
+
+    executor.execute_on_leader_sell(store, registry, leader_sell)
+
+    sell_trade = next(t for t in store.trades if t.get("side") == "sell")
+    # 100 shares * $0.40 = $40 gross proceeds; minus fee; minus $50 cost basis
+    # → ~-$10 realized loss (allowing for the small fee)
+    assert sell_trade["pnl"] < 0
+    assert sell_trade["pnl"] > -11
+    assert sell_trade["result"] == "loss"
+    assert sell_trade["exitReason"] == "sold"
+
+
+def test_poll_once_routes_sells_when_copy_mode_allows(monkeypatch):
+    """copy_mode=buys_and_sells: SELL events reach execute_on_leader_sell."""
+    from worker import executor
+
+    monkeypatch.setattr(executor, "fetch_activity", lambda addr, since: [
+        {"conditionId": "0xc1", "outcome": "Yes", "side": "SELL", "avgPrice": 0.7,
+         "totalBought": 100, "timestamp": 200, "title": "leader sell"},
+    ])
+    monkeypatch.setattr(executor, "fetch_token_ids_uncached", lambda cid: {
+        "tokens": {"yes": "tok-yes"}, "outcomes": ["Yes"],
+    })
+    monkeypatch.setattr(executor, "fetch_order_book", lambda tid: _book_with_bids())
+    monkeypatch.setattr(executor, "fetch_open_positions", lambda addr: [])
+
+    store = FakeStore(positions=[_open_position()])
+    registry = make_registry(copyMode="buys_and_sells", sellMirrorMode="proportional")
+
+    executor.poll_once(store, registry)
+
+    sell_trades = [t for t in store.trades if t.get("side") == "sell"]
+    assert len(sell_trades) == 1
+    assert sell_trades[0]["exitReason"] == "sold"
+
+
+def test_poll_once_ignores_sells_when_buys_only(monkeypatch):
+    """copy_mode=buys_only: SELL events are dropped at the poll boundary."""
+    from worker import executor
+
+    monkeypatch.setattr(executor, "fetch_activity", lambda addr, since: [
+        {"conditionId": "0xc1", "outcome": "Yes", "side": "SELL", "avgPrice": 0.7,
+         "totalBought": 100, "timestamp": 200, "title": "leader sell"},
+    ])
+
+    store = FakeStore(positions=[_open_position()])
+    registry = make_registry(copyMode="buys_only")
+
+    executor.poll_once(store, registry)
+
+    assert len(store.trades) == 0
+    assert len(store.position_upserts) == 0
+
+
 def test_poll_once_skips_paused_trader():
     """Paused trader's poll_once should be a no-op (no fetch)."""
     from worker import executor

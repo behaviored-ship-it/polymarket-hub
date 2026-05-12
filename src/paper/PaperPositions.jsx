@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { fetchOpenPositions } from './api.js';
+import { inWindow } from './usePTStats.js';
 
 const colors = {
   panel: '#0d0d1f', border: '#1e2040',
@@ -74,15 +75,20 @@ function OutcomeBadge({ outcome }) {
   );
 }
 
-function ResultBadge({ price }) {
+function ResultBadge({ position }) {
+  const price = position?.resolvedPrice;
   if (price == null) return null;
-  const won = price >= 0.99;
-  const color = won ? colors.green : colors.red;
+  const sold = position?.resolutionSource === 'sold';
+  // For sold positions, P&L sign decides color (sell above entry = green).
+  // For settled, the resolved price itself decides (1.0 = win, else loss).
+  const profitable = sold ? (position?.realizedPnl ?? 0) > 0 : price >= 0.99;
+  const color = profitable ? colors.green : colors.red;
+  const label = sold ? 'SOLD' : (profitable ? 'WIN' : 'LOSS');
   return (
     <span style={{
-      background: won ? '#001f10' : '#200008', border: `1px solid ${color}`, color,
+      background: profitable ? '#001f10' : '#200008', border: `1px solid ${color}`, color,
       fontSize: 9, letterSpacing: 1, padding: '2px 6px', borderRadius: 2, fontWeight: 'bold',
-    }}>{won ? 'WIN' : 'LOSS'}</span>
+    }}>{label}</span>
   );
 }
 
@@ -116,26 +122,34 @@ function useLivePrices(registry, enabled) {
   return { prices, stamp };
 }
 
-export default function PaperPositions({ registry, positions: allPositions }) {
+export default function PaperPositions({ registry, positions: allPositions, timeframe = 'all' }) {
   const [filter, setFilter] = useState('all'); // all | open | closed | resolved
   const [sort, setSort] = useState('recent');
   const [search, setSearch] = useState('');
   const [livePrices, setLivePrices] = useState(false);
 
+  // Apply timeframe before counts/filtering. Resolved positions narrow by
+  // resolvedAt; open positions always show — they represent current exposure
+  // and have no opened_at column on pt_positions.
+  const scoped = useMemo(
+    () => allPositions.filter((p) => !p.isResolved || inWindow(p.resolvedAt, timeframe)),
+    [allPositions, timeframe]
+  );
+
   const counts = useMemo(() => {
-    const open = allPositions.filter((p) => !p.isResolved).length;
-    const resolved = allPositions.filter((p) => p.isResolved).length;
+    const open = scoped.filter((p) => !p.isResolved).length;
+    const resolved = scoped.filter((p) => p.isResolved).length;
     // "Closed" doesn't really exist for paper trading (no manual close in MVP),
     // but we keep the pill to match the GodEye spec — counts manual closes
     // when sells are added in v1.1.
     const closed = 0;
-    return { all: allPositions.length, open, closed, resolved };
-  }, [allPositions]);
+    return { all: scoped.length, open, closed, resolved };
+  }, [scoped]);
 
   const live = useLivePrices(registry, livePrices);
 
   const visible = useMemo(() => {
-    let list = allPositions.slice();
+    let list = scoped.slice();
     if (filter === 'open') list = list.filter((p) => !p.isResolved);
     else if (filter === 'resolved') list = list.filter((p) => p.isResolved);
     else if (filter === 'closed') list = []; // see counts comment above
@@ -153,7 +167,7 @@ export default function PaperPositions({ registry, positions: allPositions }) {
       list.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
     }
     return list;
-  }, [allPositions, filter, sort, search]);
+  }, [scoped, filter, sort, search]);
 
   return (
     <div>
@@ -261,7 +275,7 @@ export default function PaperPositions({ registry, positions: allPositions }) {
                     <Cell align="right">{fmtUsdPlain(p.totalCost)}</Cell>
                     <Cell align="right" color={colors.dim}>{when}</Cell>
                     <Cell align="center">
-                      {p.isResolved ? <ResultBadge price={p.resolvedPrice} /> : (
+                      {p.isResolved ? <ResultBadge position={p} /> : (
                         <span style={{
                           background: '#001f10', border: `1px solid ${colors.green}`, color: colors.green,
                           fontSize: 9, letterSpacing: 1, padding: '2px 6px', borderRadius: 2, fontWeight: 'bold',

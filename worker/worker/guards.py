@@ -57,7 +57,12 @@ def evaluate_pre_fill_guards(ctx: Mapping[str, Any]) -> dict:
     if not (account.get("cash", 0) > 0):
         return _trans("NO_BALANCE")
 
-    if r.get("copyMode") == "buys_only" and leader_trade.get("side") and str(leader_trade["side"]).upper() != "BUY":
+    # SELL events are handled by a separate code path (execute_on_leader_sell).
+    # If a SELL somehow reached the BUY pre-fill guards, treat it as a permanent
+    # skip rather than letting it through — this is only reachable on registries
+    # explicitly set to buys_only.
+    side = str(leader_trade.get("side") or "").upper()
+    if side == "SELL" and r.get("copyMode") == "buys_only":
         return _perm("SELL_FILTERED")
 
     leader_outcome_lower = str(leader_trade.get("outcome", "")).lower()

@@ -34,7 +34,11 @@ Recovered from session `local_4a673687…` after the conversation hit an API ima
 - Added a real wallet, waited; the copy-results table wasn't spamming, which we read as "worker is running, just no fills yet."
 - Then the bug below surfaced.
 
-## Resolved 2026-05-12 — Gamma `closed=true` filter
+## Shipped 2026-05-12 — confirmed working in production
+
+PR merged. Railway redeployed. Sweep cleared the entire backlog: all 156 stuck open positions resolved on the first pass. Dashboard now reflects real state, and the ranking system unlocked (was gated by `RANK_MIN_RESOLVED = 5` resolved positions per trader — see [src/paper/constants.js](src/paper/constants.js)).
+
+## Root cause + fix — Gamma `closed=true` filter
 
 **Root cause:** Polymarket's Gamma `/markets` endpoint excludes resolved markets by default. The wallet under test trades almost exclusively the 5-minute "Bitcoin Up or Down" markets, which resolve within minutes and immediately drop off the default query. So `fetch_gamma_resolution` got `[]` back from Gamma → returned `None` → resolver fell through to `{"resolved": False}` for every single sweep. The leader had also long since redeemed those positions, so the primary `redeemable` path returned nothing either. Result: 156 stuck open out of 189, growing by ~6/hour.
 

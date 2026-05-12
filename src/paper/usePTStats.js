@@ -18,7 +18,7 @@ function tsToETDate(unixSec) {
 }
 
 // timeframe: '7d' | '30d' | '90d' | 'all'
-function inWindow(unixSec, timeframe) {
+export function inWindow(unixSec, timeframe) {
   if (timeframe === 'all' || !unixSec) return true;
   const now = Math.floor(Date.now() / 1000);
   const days = timeframe === '7d' ? 7 : timeframe === '30d' ? 30 : 90;
