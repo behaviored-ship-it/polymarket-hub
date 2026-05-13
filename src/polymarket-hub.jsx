@@ -93,10 +93,19 @@ function checkMarketCap(marketKey, currentExposure, stake, config) {
   return { skip: false, updatedExposure: currentExposure + stake };
 }
 
+// Polymarket exchange fee curve: 1% × min(price, 1-price) × dollarAmount.
+// Asymmetric — $0.50 markets pay the most, longshots and near-resolved bets
+// pay almost nothing. Mirrors the worker's compute_fee in fill_simulator.py.
+function polymarketExchangeFee(price, dollarAmount, ratePct) {
+  if (!(ratePct > 0) || !(dollarAmount > 0)) return 0;
+  const p = Math.max(0, Math.min(1, price));
+  return dollarAmount * (ratePct / 100) * Math.min(p, 1 - p);
+}
+
 function runBacktestPure(filteredTrades, config) {
   if (!filteredTrades || filteredTrades.length === 0) return null;
 
-  const { startBal, slippagePct, feeRate, minPrice, maxPrice, marketCapEnabled, marketCapAmt, dailyLimitEnabled, dailyLimitAmt } = config;
+  const { startBal, slippagePct, feeRate, minPrice, maxPrice, marketCapEnabled, marketCapAmt, dailyLimitEnabled, dailyLimitAmt, polymarketFeeRate } = config;
 
   let balance = parseFloat(startBal) || 100;
   const startBalance = balance;
@@ -161,15 +170,24 @@ function runBacktestPure(filteredTrades, config) {
         dailySpend[dateKey] = (dailySpend[dateKey] || 0) + stake;
       }
 
-      // Apply fee (e.g. 1% PolyGun copy fee) — reduces effective stake
-      const feeCost = stake * (feeRate / 100);
-      const stakeAfterFee = stake - feeCost;
+      // Two fees compound:
+      //   1. PolyGun copy fee — flat % of stake (cost of the copy service)
+      //   2. Polymarket exchange fee — 1% × min(p, 1-p) × stake (paid to the
+      //      Polymarket book, asymmetric: $0.50 markets pay max, longshots
+      //      pay near zero). Mirrors worker/fill_simulator.compute_fee.
+      const polygunFee = stake * (feeRate / 100);
+      const exchangeFee = polymarketExchangeFee(effectivePrice, stake, polymarketFeeRate);
+      const totalFee = polygunFee + exchangeFee;
+      const stakeAfterFee = stake - totalFee;
 
       if (t.result === "win") {
-        balance += stakeAfterFee * (1 - effectivePrice) / effectivePrice - feeCost;
+        // shares = stakeAfterFee / effectivePrice; payout = shares × $1.
+        // Net to bank = payout - stake = stakeAfterFee/p - stake.
+        balance += stakeAfterFee * (1 - effectivePrice) / effectivePrice - totalFee;
         wins++;
       } else {
-        balance -= stake; // full stake lost including fee
+        // Stake fully lost (fees already paid up-front, shares went to 0).
+        balance -= stake;
         losses++;
       }
 
@@ -297,6 +315,9 @@ export default function App() {
   const [btMinPrice, setBtMinPrice] = useState("");
   const [btMaxPrice, setBtMaxPrice] = useState("");
   const [btFeeRate, setBtFeeRate] = useState(1);
+  // Polymarket's actual order-book fee: 1% × min(p, 1-p) of stake. Non-zero
+  // by default because in production you pay both PolyGun + the exchange fee.
+  const [btPolymarketFeeRate, setBtPolymarketFeeRate] = useState(1);
   const [btFillsMode, setBtFillsMode] = useState(false);
   const [fillsData, setFillsData] = useState([]); // raw fills for click panel lookup
   const [fillsMap, setFillsMap] = useState({}); // conditionId -> fills[] for backtest expansion
@@ -692,6 +713,7 @@ export default function App() {
       multiplier: parseFloat(btMultiplier) || 1,
       slippagePct: parseFloat(btSlippage) || 0,
       feeRate: parseFloat(btFeeRate) || 0,
+      polymarketFeeRate: parseFloat(btPolymarketFeeRate) || 0,
       minPrice: btMinPrice !== "" ? parseFloat(btMinPrice) : null,
       maxPrice: btMaxPrice !== "" ? parseFloat(btMaxPrice) : null,
       marketCapEnabled: btMarketCapEnabled && parseFloat(btMarketCap) > 0,
@@ -703,7 +725,7 @@ export default function App() {
     };
     return runBacktestPure(filteredTrades, config);
   }, [btStartBal, btSizingMode, btFixedAmt, btPct, btPortfolioBalance, btMultiplier, btSlippage,
-      btFeeRate, btMinPrice, btMaxPrice,
+      btFeeRate, btPolymarketFeeRate, btMinPrice, btMaxPrice,
       btMarketCapEnabled, btMarketCap, btDailyLimitEnabled, btDailyLimit,
       leaderPortfolioData, btLeaderBalance]);
 
@@ -1297,7 +1319,16 @@ export default function App() {
                           min="0" max="10" step="0.1" style={{...S.inp,width:55}}/>
                         <span style={{fontSize:11,color:"#7080a0"}}>%</span>
                       </div>
-                      {parseFloat(btFeeRate)>0&&<div style={{fontSize:10,color:"#f0c040"}}>-${(parseFloat(btFeeRate)/100*(parseFloat(btFixedAmt)||10)).toFixed(2)} per trade</div>}
+                      {parseFloat(btFeeRate)>0&&<div style={{fontSize:10,color:"#f0c040"}}>flat % of stake — copy service fee</div>}
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>POLYMARKET FEE (%)</label>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <input type="number" value={btPolymarketFeeRate} onChange={e=>setBtPolymarketFeeRate(e.target.value)}
+                          min="0" max="5" step="0.1" style={{...S.inp,width:55}}/>
+                        <span style={{fontSize:11,color:"#7080a0"}}>%</span>
+                      </div>
+                      {parseFloat(btPolymarketFeeRate)>0&&<div style={{fontSize:10,color:"#f0c040"}}>× min(p, 1-p) — exchange fee</div>}
                     </div>
                   </div>
 
