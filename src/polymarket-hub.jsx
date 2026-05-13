@@ -1807,7 +1807,14 @@ export default function App() {
       {/* ══════════════════════════════════════════════════════════
           WALLET ANALYZER
       ══════════════════════════════════════════════════════════ */}
-      {mainTab==="wa"&&<WalletAnalyzerTab initialWallet={walletAnalyzerSeed} />}
+      {mainTab==="wa"&&<WalletAnalyzerTab
+        initialWallet={walletAnalyzerSeed}
+        // Pass the backtest result through if and only if the WR-tracker
+        // wallet matches the analyzer's wallet — otherwise we'd be feeding a
+        // different wallet's ROI into this wallet's copyability score.
+        wrWallet={walletAddr}
+        backtest={btResult ? { roi: btResult.roi / 100, endBalance: btResult.endBal, startBalance: btResult.startBal } : null}
+      />}
 
       {/* ── Overlay Naming Modal ── */}
       {pendingCurve&&(
