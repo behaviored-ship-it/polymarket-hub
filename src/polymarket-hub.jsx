@@ -504,6 +504,33 @@ export default function App() {
     }
   }, [walletAddr]);
 
+  // ── Auto-refresh stale data when entering a trade-dependent tab ─────────────
+  // The WR tracker and BACKTEST tab both read from the cached `trades` state.
+  // Without this, a user who loads the app and immediately opens BACKTEST sees
+  // a backtest computed against whatever was cached last (possibly weeks old)
+  // with no indication of the staleness gap. Auto-fetch closes that.
+  //
+  // Conditions to trigger:
+  //   - On WR or BACKTEST tab
+  //   - We already have a wallet to fetch from
+  //   - There IS cached data (so we have something to refresh; first-time
+  //     users still see the empty-state CTA and choose when to fetch)
+  //   - Not already fetching
+  //   - Cached data is more than 1h old (or its age is unknown — legacy state
+  //     from before lastFetchedAt was tracked)
+  //   - Last fetch wasn't an error (don't retry-loop a failing endpoint)
+  useEffect(() => {
+    const STALE_THRESHOLD_MS = 3_600_000; // 1 hour
+    if (mainTab !== "wr" && mainTab !== "bt") return;
+    if (!walletAddr || !walletAddr.startsWith("0x")) return;
+    if (trades.length === 0) return;
+    if (fetchStatus === "loading" || fetchStatus === "error" || fetchStatus === "cors") return;
+    const ageMs = lastFetchedAt ? Date.now() - lastFetchedAt : Infinity;
+    if (ageMs < STALE_THRESHOLD_MS) return;
+    fetchWR();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mainTab, lastFetchedAt, walletAddr]);
+
   // ── Fetch Fills (trade-level data for Advanced backtest mode) ────────────────
   const fetchFills = useCallback(async (address, positionMap) => {
     try {
