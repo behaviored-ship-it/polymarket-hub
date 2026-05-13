@@ -563,10 +563,12 @@ export default function App() {
     if (!address.startsWith("0x")) return;
     setVerifyStatus("loading");
     try {
-      // Fetch raw trades from Polymarket API (ground truth)
+      // Fetch raw trades from Polymarket API (ground truth). Explicit DESC
+      // sort means the freshest fills come back on page 0 — important when
+      // a wallet has thousands of trades and we want recency.
       let allRaw = [], offset = 0;
       while (true) {
-        const url = 'https://data-api.polymarket.com/trades?user=' + address.toLowerCase() + '&limit=50&offset=' + offset;
+        const url = 'https://data-api.polymarket.com/trades?user=' + address.toLowerCase() + '&limit=50&offset=' + offset + '&sortBy=TIMESTAMP&sortDirection=DESC';
         const res = await fetch(url);
         if (!res.ok) break;
         const data = await res.json();
@@ -603,7 +605,9 @@ export default function App() {
           result: position?.result || "—",
           match,
         };
-      }).sort((a, b) => a.date.localeCompare(b.date));
+      // Newest at top so freshly-loaded data is what the user sees first.
+      // Old: ASC sort buried recent fills below 700+ historical rows.
+      }).sort((a, b) => b.date.localeCompare(a.date));
 
       setVerifyData({
         rows,
@@ -612,12 +616,17 @@ export default function App() {
         totalAppFills: rows.reduce((s, r) => s + r.appFills, 0),
         mismatches: rows.filter(r => !r.match).length,
         notInPositions: rows.filter(r => !r.inPositions).length,
+        // Stamp the trade count + last-fetched-at at verify time. If those
+        // change later (user re-fetches), the UI flags this verify as stale.
+        ranAt: Date.now(),
+        tradeCountAtRun: trades.length,
+        fetchedAtRun: lastFetchedAt,
       });
       setVerifyStatus("done");
     } catch(e) {
       setVerifyStatus("idle");
     }
-  }, [walletAddr, fillsMap, trades]);
+  }, [walletAddr, fillsMap, trades, lastFetchedAt]);
 
   // ── Fetch PnL ───────────────────────────────────────────────────────────────
   const fetchPnL = useCallback(async () => {
@@ -1224,13 +1233,37 @@ export default function App() {
               <div style={{marginBottom:12,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
                 <button onClick={runVerification} disabled={verifyStatus==="loading"||trades.length===0}
                   style={S.btn("primary", verifyStatus==="loading"||trades.length===0)}>
-                  {verifyStatus==="loading"?"RUNNING...":"RUN VERIFICATION"}
+                  {verifyStatus==="loading"?"RUNNING...":verifyData?"RE-RUN VERIFICATION":"RUN VERIFICATION"}
                 </button>
                 {trades.length===0&&<span style={{fontSize:12,color:"#505878"}}>Fetch a wallet first</span>}
                 {verifyData&&<span style={{fontSize:12,color:"#7080a0"}}>
                   {verifyData.totalMarkets} markets · {verifyData.totalRawFills} raw fills · {verifyData.totalAppFills} app fills · {verifyData.mismatches} mismatches · {verifyData.notInPositions} not in positions
                 </span>}
               </div>
+
+              {/* Stale-verify banner: surfaces when the underlying trade
+                  snapshot has changed since this verify ran, OR when the
+                  verify itself is more than an hour old. */}
+              {verifyData&&(()=>{
+                const tradesChanged = verifyData.tradeCountAtRun !== trades.length
+                                   || verifyData.fetchedAtRun !== lastFetchedAt;
+                const ageMs = verifyData.ranAt ? Date.now() - verifyData.ranAt : 0;
+                const verifyOld = ageMs > 3_600_000; // > 1h
+                if (!tradesChanged && !verifyOld) return null;
+                const ageStr = ageMs < 60_000 ? "just now" : ageMs<3_600_000 ? Math.floor(ageMs/60_000)+"m ago" : ageMs<86_400_000 ? Math.floor(ageMs/3_600_000)+"h ago" : Math.floor(ageMs/86_400_000)+"d ago";
+                return(
+                  <div style={{background:"#1a1000",border:"1px solid #f0c040",padding:"7px 14px",fontSize:12,color:"#f0c040",letterSpacing:1,marginBottom:12,borderRadius:2,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                    ⚠ Verify ran {ageStr}
+                    {tradesChanged&&<span>· trade data has changed since (was {verifyData.tradeCountAtRun}, now {trades.length})</span>}
+                    <button onClick={runVerification} disabled={verifyStatus==="loading"}
+                      style={{marginLeft:"auto",background:"#1a1000",border:"1px solid #f0c040",color:"#f0c040",
+                        fontFamily:"'JetBrains Mono',monospace",fontSize:10,letterSpacing:2,padding:"3px 10px",
+                        cursor:verifyStatus==="loading"?"wait":"pointer",borderRadius:2,textTransform:"uppercase"}}>
+                      {verifyStatus==="loading"?"RUNNING…":"↻ RE-RUN"}
+                    </button>
+                  </div>
+                );
+              })()}
               {verifyData&&(
                 <div style={{background:"#0d0d1f",border:"1px solid #1e2040",borderRadius:2,overflowX:"auto"}}>
                   <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,fontFamily:"'JetBrains Mono',monospace"}}>
