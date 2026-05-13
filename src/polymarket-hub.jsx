@@ -1454,7 +1454,7 @@ export default function App() {
                           <input type="date" value={btDateTo} onChange={e=>setBtDateTo(e.target.value)} style={{...S.inp,colorScheme:"dark"}}/>
                         </div>
                       )}
-                      {btSelectedHours.length===0&&(
+                      {btSelectedHours.length===0?(
                         <select
                           value={btMode==="block"?btBlock:btCustomBlock}
                           onChange={e=>{btMode==="block"?setBtBlock(parseInt(e.target.value)):setBtCustomBlock(parseInt(e.target.value));}}
@@ -1463,6 +1463,17 @@ export default function App() {
                           {BLOCK4_LABELS.map((l,b)=><option key={b} value={b+1}>{l}</option>)}
                           <option value={7}>All hours</option>
                         </select>
+                      ):(
+                        <div style={{display:"flex",alignItems:"center",gap:8,fontSize:11,color:"#7080a0",letterSpacing:1}}>
+                          <span style={{color:"#f0c040"}}>⚠ Hourly select active</span>
+                          <span>· block dropdown ignored ·</span>
+                          <button onClick={()=>setBtSelectedHours([])}
+                            style={{background:"none",border:"1px solid #303060",color:"#a0b0c8",
+                              fontFamily:"'JetBrains Mono',monospace",fontSize:10,letterSpacing:1,
+                              padding:"3px 8px",cursor:"pointer",borderRadius:2}}>
+                            CLEAR HOURS
+                          </button>
+                        </div>
                       )}
                       <div>
                         <button onClick={()=>setBtHourlyExpanded(x=>!x)} style={{...S.seg(btSelectedHours.length>0),fontSize:11,display:"flex",alignItems:"center",gap:6}}>
