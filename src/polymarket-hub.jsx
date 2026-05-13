@@ -281,7 +281,7 @@ export default function App() {
   const [btLeaderBalance, setBtLeaderBalance] = useState(1000);
   const [btMultiplier, setBtMultiplier] = useState(1);
   const [btMode, setBtMode] = useState("block");
-  const [btBlock, setBtBlock] = useState(0);
+  const [btBlock, setBtBlock] = useState(7); // 7 = ALL HOURS (was 0 = NIGHT, surprising default)
   const [btDateFrom, setBtDateFrom] = useState("2026-02-19");
   const [btDateTo, setBtDateTo] = useState("2026-03-06");
   const [btCustomBlock, setBtCustomBlock] = useState(0);
