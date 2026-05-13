@@ -57,7 +57,9 @@ function buildTradeGroups(trades) {
 }
 
 function applySlippage(avgPrice, slippagePct) {
-  return Math.min(avgPrice + avgPrice * (slippagePct / 100), 0.9999);
+  // No clamp — caller checks if the result is unfillable (>= 1.0) and skips
+  // the trade rather than silently producing a near-$0 win.
+  return avgPrice + avgPrice * (slippagePct / 100);
 }
 
 function calcStake(trade, concurrentCount, config, currentBalance) {
@@ -114,7 +116,7 @@ function runBacktestPure(filteredTrades, config) {
   const marketExposure = {};
   const dailySpend = {};
   let tradeIndex = 0;
-  const skipped = { marketCap: 0, dailyLimit: 0, insufficientBalance: 0, priceFilter: 0 };
+  const skipped = { marketCap: 0, dailyLimit: 0, insufficientBalance: 0, priceFilter: 0, slippagePastLimit: 0 };
 
   const groups = buildTradeGroups(filteredTrades);
 
@@ -125,6 +127,14 @@ function runBacktestPure(filteredTrades, config) {
       const marketKey = (t.title || "unknown").toLowerCase();
       const avgPrice = t.avgPrice > 0 && t.avgPrice < 1 ? t.avgPrice : 0.5;
       const effectivePrice = applySlippage(avgPrice, slippagePct);
+
+      // Slippage pushed the entry past $1 — order is unfillable on Polymarket.
+      // Skip instead of silently treating it as a near-zero-profit win.
+      if (effectivePrice >= 1.0) {
+        skipped.slippagePastLimit++;
+        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
+        continue;
+      }
 
       // Price range filter — skip trades outside configured entry price band.
       // Doesn't depend on stake, so check before sizing.
@@ -1808,13 +1818,14 @@ export default function App() {
               {/* ── SKIP WARNING BANNER ── */}
               {btMode!=="all"&&btResult&&(()=>{
                 const s = btResult.skipped;
-                const total = s.priceFilter + s.marketCap + s.dailyLimit + s.insufficientBalance;
+                const total = s.priceFilter + s.marketCap + s.dailyLimit + s.insufficientBalance + (s.slippagePastLimit||0);
                 if(total===0) return null;
                 const parts = [
                   s.priceFilter>0 && `${s.priceFilter} price filter`,
                   s.marketCap>0 && `${s.marketCap} market cap`,
                   s.dailyLimit>0 && `${s.dailyLimit} daily limit`,
                   s.insufficientBalance>0 && `${s.insufficientBalance} insufficient balance`,
+                  (s.slippagePastLimit||0)>0 && `${s.slippagePastLimit} slippage past $1`,
                 ].filter(Boolean).join(" · ");
                 return(
                   <div style={{background:"#1a1000",border:"1px solid #f0c040",padding:"7px 14px",fontSize:12,color:"#f0c040",letterSpacing:1,marginBottom:12,borderRadius:2}}>
