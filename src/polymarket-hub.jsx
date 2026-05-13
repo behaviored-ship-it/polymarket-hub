@@ -57,7 +57,9 @@ function buildTradeGroups(trades) {
 }
 
 function applySlippage(avgPrice, slippagePct) {
-  return Math.min(avgPrice + avgPrice * (slippagePct / 100), 0.9999);
+  // No clamp — caller checks if the result is unfillable (>= 1.0) and skips
+  // the trade rather than silently producing a near-$0 win.
+  return avgPrice + avgPrice * (slippagePct / 100);
 }
 
 function calcStake(trade, concurrentCount, config, currentBalance) {
@@ -93,10 +95,19 @@ function checkMarketCap(marketKey, currentExposure, stake, config) {
   return { skip: false, updatedExposure: currentExposure + stake };
 }
 
+// Polymarket exchange fee curve: 1% × min(price, 1-price) × dollarAmount.
+// Asymmetric — $0.50 markets pay the most, longshots and near-resolved bets
+// pay almost nothing. Mirrors the worker's compute_fee in fill_simulator.py.
+function polymarketExchangeFee(price, dollarAmount, ratePct) {
+  if (!(ratePct > 0) || !(dollarAmount > 0)) return 0;
+  const p = Math.max(0, Math.min(1, price));
+  return dollarAmount * (ratePct / 100) * Math.min(p, 1 - p);
+}
+
 function runBacktestPure(filteredTrades, config) {
   if (!filteredTrades || filteredTrades.length === 0) return null;
 
-  const { startBal, slippagePct, feeRate, minPrice, maxPrice, marketCapEnabled, marketCapAmt, dailyLimitEnabled, dailyLimitAmt } = config;
+  const { startBal, slippagePct, feeRate, minPrice, maxPrice, marketCapEnabled, marketCapAmt, dailyLimitEnabled, dailyLimitAmt, polymarketFeeRate } = config;
 
   let balance = parseFloat(startBal) || 100;
   const startBalance = balance;
@@ -105,7 +116,7 @@ function runBacktestPure(filteredTrades, config) {
   const marketExposure = {};
   const dailySpend = {};
   let tradeIndex = 0;
-  const skipped = { marketCap: 0, dailyLimit: 0, insufficientBalance: 0, priceFilter: 0 };
+  const skipped = { marketCap: 0, dailyLimit: 0, insufficientBalance: 0, priceFilter: 0, slippagePastLimit: 0 };
 
   const groups = buildTradeGroups(filteredTrades);
 
@@ -117,14 +128,16 @@ function runBacktestPure(filteredTrades, config) {
       const avgPrice = t.avgPrice > 0 && t.avgPrice < 1 ? t.avgPrice : 0.5;
       const effectivePrice = applySlippage(avgPrice, slippagePct);
 
-      const currentExposure = marketExposure[marketKey] || 0;
-      if (marketCapEnabled && currentExposure >= marketCapAmt) {
-        skipped.marketCap++;
-        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: group.length });
+      // Slippage pushed the entry past $1 — order is unfillable on Polymarket.
+      // Skip instead of silently treating it as a near-zero-profit win.
+      if (effectivePrice >= 1.0) {
+        skipped.slippagePastLimit++;
+        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
         continue;
       }
 
-      // Price range filter — skip trades outside configured entry price band
+      // Price range filter — skip trades outside configured entry price band.
+      // Doesn't depend on stake, so check before sizing.
       if (minPrice !== null && avgPrice < minPrice) {
         skipped.priceFilter++;
         equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
@@ -136,22 +149,32 @@ function runBacktestPure(filteredTrades, config) {
         continue;
       }
 
-      const dateKey = t.dateET || "";
-      if (dailyLimitEnabled) {
-        const spent = dailySpend[dateKey] || 0;
-        if (spent >= dailyLimitAmt) {
-          skipped.dailyLimit++;
-          equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: t.fillsInPosition || group.length });
-          continue;
-        }
-      }
-
       const stake = calcStake(t, concurrentCount, config, balance);
 
       if (stake <= 0 || balance <= 0) {
         skipped.insufficientBalance++;
         equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: t.fillsInPosition || group.length });
         continue;
+      }
+
+      // Caps now check "would this push me OVER the limit?" instead of "am I
+      // already over?". Previous behavior consistently overshot — e.g. cap=$10
+      // and current exposure $5.22 let a $6.66 trade in, ending at $11.88.
+      const currentExposure = marketExposure[marketKey] || 0;
+      if (marketCapEnabled && currentExposure + stake > marketCapAmt) {
+        skipped.marketCap++;
+        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: group.length });
+        continue;
+      }
+
+      const dateKey = t.dateET || "";
+      if (dailyLimitEnabled) {
+        const spent = dailySpend[dateKey] || 0;
+        if (spent + stake > dailyLimitAmt) {
+          skipped.dailyLimit++;
+          equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: t.fillsInPosition || group.length });
+          continue;
+        }
       }
 
       if (marketCapEnabled) {
@@ -161,15 +184,24 @@ function runBacktestPure(filteredTrades, config) {
         dailySpend[dateKey] = (dailySpend[dateKey] || 0) + stake;
       }
 
-      // Apply fee (e.g. 1% PolyGun copy fee) — reduces effective stake
-      const feeCost = stake * (feeRate / 100);
-      const stakeAfterFee = stake - feeCost;
+      // Two fees compound:
+      //   1. PolyGun copy fee — flat % of stake (cost of the copy service)
+      //   2. Polymarket exchange fee — 1% × min(p, 1-p) × stake (paid to the
+      //      Polymarket book, asymmetric: $0.50 markets pay max, longshots
+      //      pay near zero). Mirrors worker/fill_simulator.compute_fee.
+      const polygunFee = stake * (feeRate / 100);
+      const exchangeFee = polymarketExchangeFee(effectivePrice, stake, polymarketFeeRate);
+      const totalFee = polygunFee + exchangeFee;
+      const stakeAfterFee = stake - totalFee;
 
       if (t.result === "win") {
-        balance += stakeAfterFee * (1 - effectivePrice) / effectivePrice - feeCost;
+        // shares = stakeAfterFee / effectivePrice; payout = shares × $1.
+        // Net to bank = payout - stake = stakeAfterFee/p - stake.
+        balance += stakeAfterFee * (1 - effectivePrice) / effectivePrice - totalFee;
         wins++;
       } else {
-        balance -= stake; // full stake lost including fee
+        // Stake fully lost (fees already paid up-front, shares went to 0).
+        balance -= stake;
         losses++;
       }
 
@@ -281,7 +313,7 @@ export default function App() {
   const [btLeaderBalance, setBtLeaderBalance] = useState(1000);
   const [btMultiplier, setBtMultiplier] = useState(1);
   const [btMode, setBtMode] = useState("block");
-  const [btBlock, setBtBlock] = useState(0);
+  const [btBlock, setBtBlock] = useState(7); // 7 = ALL HOURS (was 0 = NIGHT, surprising default)
   const [btDateFrom, setBtDateFrom] = useState("2026-02-19");
   const [btDateTo, setBtDateTo] = useState("2026-03-06");
   const [btCustomBlock, setBtCustomBlock] = useState(0);
@@ -297,6 +329,9 @@ export default function App() {
   const [btMinPrice, setBtMinPrice] = useState("");
   const [btMaxPrice, setBtMaxPrice] = useState("");
   const [btFeeRate, setBtFeeRate] = useState(1);
+  // Polymarket's actual order-book fee: 1% × min(p, 1-p) of stake. Non-zero
+  // by default because in production you pay both PolyGun + the exchange fee.
+  const [btPolymarketFeeRate, setBtPolymarketFeeRate] = useState(1);
   const [btFillsMode, setBtFillsMode] = useState(false);
   const [fillsData, setFillsData] = useState([]); // raw fills for click panel lookup
   const [fillsMap, setFillsMap] = useState({}); // conditionId -> fills[] for backtest expansion
@@ -692,6 +727,7 @@ export default function App() {
       multiplier: parseFloat(btMultiplier) || 1,
       slippagePct: parseFloat(btSlippage) || 0,
       feeRate: parseFloat(btFeeRate) || 0,
+      polymarketFeeRate: parseFloat(btPolymarketFeeRate) || 0,
       minPrice: btMinPrice !== "" ? parseFloat(btMinPrice) : null,
       maxPrice: btMaxPrice !== "" ? parseFloat(btMaxPrice) : null,
       marketCapEnabled: btMarketCapEnabled && parseFloat(btMarketCap) > 0,
@@ -703,7 +739,7 @@ export default function App() {
     };
     return runBacktestPure(filteredTrades, config);
   }, [btStartBal, btSizingMode, btFixedAmt, btPct, btPortfolioBalance, btMultiplier, btSlippage,
-      btFeeRate, btMinPrice, btMaxPrice,
+      btFeeRate, btPolymarketFeeRate, btMinPrice, btMaxPrice,
       btMarketCapEnabled, btMarketCap, btDailyLimitEnabled, btDailyLimit,
       leaderPortfolioData, btLeaderBalance]);
 
@@ -1297,7 +1333,16 @@ export default function App() {
                           min="0" max="10" step="0.1" style={{...S.inp,width:55}}/>
                         <span style={{fontSize:11,color:"#7080a0"}}>%</span>
                       </div>
-                      {parseFloat(btFeeRate)>0&&<div style={{fontSize:10,color:"#f0c040"}}>-${(parseFloat(btFeeRate)/100*(parseFloat(btFixedAmt)||10)).toFixed(2)} per trade</div>}
+                      {parseFloat(btFeeRate)>0&&<div style={{fontSize:10,color:"#f0c040"}}>flat % of stake — copy service fee</div>}
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                      <label style={{fontSize:11,letterSpacing:2,color:"#7080a0"}}>POLYMARKET FEE (%)</label>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <input type="number" value={btPolymarketFeeRate} onChange={e=>setBtPolymarketFeeRate(e.target.value)}
+                          min="0" max="5" step="0.1" style={{...S.inp,width:55}}/>
+                        <span style={{fontSize:11,color:"#7080a0"}}>%</span>
+                      </div>
+                      {parseFloat(btPolymarketFeeRate)>0&&<div style={{fontSize:10,color:"#f0c040"}}>× min(p, 1-p) — exchange fee</div>}
                     </div>
                   </div>
 
@@ -1409,7 +1454,7 @@ export default function App() {
                           <input type="date" value={btDateTo} onChange={e=>setBtDateTo(e.target.value)} style={{...S.inp,colorScheme:"dark"}}/>
                         </div>
                       )}
-                      {btSelectedHours.length===0&&(
+                      {btSelectedHours.length===0?(
                         <select
                           value={btMode==="block"?btBlock:btCustomBlock}
                           onChange={e=>{btMode==="block"?setBtBlock(parseInt(e.target.value)):setBtCustomBlock(parseInt(e.target.value));}}
@@ -1418,6 +1463,17 @@ export default function App() {
                           {BLOCK4_LABELS.map((l,b)=><option key={b} value={b+1}>{l}</option>)}
                           <option value={7}>All hours</option>
                         </select>
+                      ):(
+                        <div style={{display:"flex",alignItems:"center",gap:8,fontSize:11,color:"#7080a0",letterSpacing:1}}>
+                          <span style={{color:"#f0c040"}}>⚠ Hourly select active</span>
+                          <span>· block dropdown ignored ·</span>
+                          <button onClick={()=>setBtSelectedHours([])}
+                            style={{background:"none",border:"1px solid #303060",color:"#a0b0c8",
+                              fontFamily:"'JetBrains Mono',monospace",fontSize:10,letterSpacing:1,
+                              padding:"3px 8px",cursor:"pointer",borderRadius:2}}>
+                            CLEAR HOURS
+                          </button>
+                        </div>
                       )}
                       <div>
                         <button onClick={()=>setBtHourlyExpanded(x=>!x)} style={{...S.seg(btSelectedHours.length>0),fontSize:11,display:"flex",alignItems:"center",gap:6}}>
@@ -1773,13 +1829,14 @@ export default function App() {
               {/* ── SKIP WARNING BANNER ── */}
               {btMode!=="all"&&btResult&&(()=>{
                 const s = btResult.skipped;
-                const total = s.priceFilter + s.marketCap + s.dailyLimit + s.insufficientBalance;
+                const total = s.priceFilter + s.marketCap + s.dailyLimit + s.insufficientBalance + (s.slippagePastLimit||0);
                 if(total===0) return null;
                 const parts = [
                   s.priceFilter>0 && `${s.priceFilter} price filter`,
                   s.marketCap>0 && `${s.marketCap} market cap`,
                   s.dailyLimit>0 && `${s.dailyLimit} daily limit`,
                   s.insufficientBalance>0 && `${s.insufficientBalance} insufficient balance`,
+                  (s.slippagePastLimit||0)>0 && `${s.slippagePastLimit} slippage past $1`,
                 ].filter(Boolean).join(" · ");
                 return(
                   <div style={{background:"#1a1000",border:"1px solid #f0c040",padding:"7px 14px",fontSize:12,color:"#f0c040",letterSpacing:1,marginBottom:12,borderRadius:2}}>
@@ -1807,7 +1864,14 @@ export default function App() {
       {/* ══════════════════════════════════════════════════════════
           WALLET ANALYZER
       ══════════════════════════════════════════════════════════ */}
-      {mainTab==="wa"&&<WalletAnalyzerTab initialWallet={walletAnalyzerSeed} />}
+      {mainTab==="wa"&&<WalletAnalyzerTab
+        initialWallet={walletAnalyzerSeed}
+        // Pass the backtest result through if and only if the WR-tracker
+        // wallet matches the analyzer's wallet — otherwise we'd be feeding a
+        // different wallet's ROI into this wallet's copyability score.
+        wrWallet={walletAddr}
+        backtest={btResult ? { roi: btResult.roi / 100, endBalance: btResult.endBal, startBalance: btResult.startBal } : null}
+      />}
 
       {/* ── Overlay Naming Modal ── */}
       {pendingCurve&&(

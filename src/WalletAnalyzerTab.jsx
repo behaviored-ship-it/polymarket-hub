@@ -180,13 +180,22 @@ async function fetchClosedTrades(address) {
 }
 
 // ── Component ───────────────────────────────────────────────────────────────
-export default function WalletAnalyzerTab({ initialWallet }) {
+export default function WalletAnalyzerTab({ initialWallet, wrWallet, backtest }) {
   const [input, setInput] = useState(initialWallet || '');
   const [status, setStatus] = useState('idle');   // idle | loading | ready | error
   const [msg, setMsg] = useState('');
   const [trades, setTrades] = useState([]);
   const [activity, setActivity] = useState([]);
   const lastFetched = useRef(null);
+
+  // Only feed the backtest result into the copyability score when the analyzer
+  // is looking at the SAME wallet the backtest was run on. Otherwise we'd be
+  // mixing wallet A's ROI into wallet B's score — silently misleading.
+  const analyzerWallet = (lastFetched.current || input || '').trim().toLowerCase();
+  const backtestWallet = (wrWallet || '').trim().toLowerCase();
+  const backtestForThisWallet = (backtest && analyzerWallet && analyzerWallet === backtestWallet)
+    ? backtest
+    : null;
 
   const run = async (addr) => {
     const address = (addr ?? input).trim();
@@ -301,7 +310,7 @@ export default function WalletAnalyzerTab({ initialWallet }) {
         </div>
       ) : (
         <>
-          <WalletAnalyzer trades={trades} backtest={null} />
+          <WalletAnalyzer trades={trades} backtest={backtestForThisWallet} />
           {ext && <ExtendedMetricsPanel ext={ext} />}
         </>
       )}
