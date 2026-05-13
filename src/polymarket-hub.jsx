@@ -126,14 +126,8 @@ function runBacktestPure(filteredTrades, config) {
       const avgPrice = t.avgPrice > 0 && t.avgPrice < 1 ? t.avgPrice : 0.5;
       const effectivePrice = applySlippage(avgPrice, slippagePct);
 
-      const currentExposure = marketExposure[marketKey] || 0;
-      if (marketCapEnabled && currentExposure >= marketCapAmt) {
-        skipped.marketCap++;
-        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: group.length });
-        continue;
-      }
-
-      // Price range filter — skip trades outside configured entry price band
+      // Price range filter — skip trades outside configured entry price band.
+      // Doesn't depend on stake, so check before sizing.
       if (minPrice !== null && avgPrice < minPrice) {
         skipped.priceFilter++;
         equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null });
@@ -145,22 +139,32 @@ function runBacktestPure(filteredTrades, config) {
         continue;
       }
 
-      const dateKey = t.dateET || "";
-      if (dailyLimitEnabled) {
-        const spent = dailySpend[dateKey] || 0;
-        if (spent >= dailyLimitAmt) {
-          skipped.dailyLimit++;
-          equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: t.fillsInPosition || group.length });
-          continue;
-        }
-      }
-
       const stake = calcStake(t, concurrentCount, config, balance);
 
       if (stake <= 0 || balance <= 0) {
         skipped.insufficientBalance++;
         equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: t.fillsInPosition || group.length });
         continue;
+      }
+
+      // Caps now check "would this push me OVER the limit?" instead of "am I
+      // already over?". Previous behavior consistently overshot — e.g. cap=$10
+      // and current exposure $5.22 let a $6.66 trade in, ending at $11.88.
+      const currentExposure = marketExposure[marketKey] || 0;
+      if (marketCapEnabled && currentExposure + stake > marketCapAmt) {
+        skipped.marketCap++;
+        equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: group.length });
+        continue;
+      }
+
+      const dateKey = t.dateET || "";
+      if (dailyLimitEnabled) {
+        const spent = dailySpend[dateKey] || 0;
+        if (spent + stake > dailyLimitAmt) {
+          skipped.dailyLimit++;
+          equity.push({ i: tradeIndex, bal: parseFloat(balance.toFixed(2)), date: t.dateET || "", hour: t.hourET ?? null, fills: t.fillsInPosition || group.length });
+          continue;
+        }
       }
 
       if (marketCapEnabled) {
