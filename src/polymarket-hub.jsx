@@ -12,6 +12,7 @@ const OVERLAY_COLORS = ["#00ff9d","#f0c040","#ff4d6d","#00aaff","#ff9d00","#cc44
 const TARGET_WALLET = "0x428b3f163E831f4d57D9589Bf6e94c64Ce9C6b7a";
 const STORAGE_KEY = "polymarket-hub-trades";
 const WALLET_KEY = "polymarket-hub-wallet";
+const FETCHED_AT_KEY = "polymarket-hub-fetched-at";
 const PROXY_BASE  = "https://polymarket-hub.vercel.app/api/positions";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -277,6 +278,10 @@ export default function App() {
   const [trades, setTrades] = useState([]);
   const [storageStatus, setStorageStatus] = useState("loading");
   const [lastSaved, setLastSaved] = useState(null);
+  // Wall-clock ms when fetchWR last succeeded. Separate from lastSaved (which
+  // is a save timestamp) so the BACKTEST tab can show how stale the trade
+  // data is — stale data is the most common "why is my backtest weird" cause.
+  const [lastFetchedAt, setLastFetchedAt] = useState(null);
   const [mainTab, setMainTab] = useState("wr");
   // Wallet Analyzer seed — set by deep-links (e.g. "Analyze Leader →" from Paper Trader).
   // The tab's initial-wallet useEffect treats a change as a request to auto-fetch.
@@ -351,6 +356,8 @@ export default function App() {
         const savedWallet = await storageLoad(WALLET_KEY);
         if (savedWallet) setWalletAddr(savedWallet);
         const savedTrades = await storageLoad(STORAGE_KEY);
+        const savedFetchedAt = await storageLoad(FETCHED_AT_KEY);
+        if (savedFetchedAt && typeof savedFetchedAt === "number") setLastFetchedAt(savedFetchedAt);
         if (savedTrades && Array.isArray(savedTrades) && savedTrades.length > 0) {
           setTrades(savedTrades);
           setLastSaved(new Date().toLocaleTimeString());
@@ -383,6 +390,8 @@ export default function App() {
   const clearStorage = async () => {
     await storageDel(STORAGE_KEY);
     await storageDel(WALLET_KEY);
+    await storageDel(FETCHED_AT_KEY);
+    setLastFetchedAt(null);
     setTrades([]);
     setLastSaved(null);
     setStorageStatus("ready");
@@ -477,6 +486,9 @@ export default function App() {
 
       setTrades(classified);
       setWalletLabel(address.slice(0,6)+"…"+address.slice(-4));
+      const now = Date.now();
+      setLastFetchedAt(now);
+      try { await storageSave(FETCHED_AT_KEY, now); } catch (_) { /* ignore */ }
       setFetchStatus("success");
       const expiredNote = expiredCount > 0 ? ` · ⚠ ${expiredCount} expired positions included as losses` : "";
       setFetchMsg(`Loaded ${classified.length - expiredCount} trades (${skipped} zero-PnL skipped)${expiredNote} — auto-saving...`);
@@ -1265,6 +1277,41 @@ export default function App() {
             <div style={{textAlign:"center",padding:"40px 0",color:"#505880",fontSize:13,letterSpacing:2}}>FETCH WALLET DATA FIRST (FETCH BUTTON IN HEADER)</div>
           ):(
             <div>
+              {/* ── DATA FRESHNESS STRIP ── */}
+              {(()=>{
+                const newestTs = trades.reduce((m,t)=>Math.max(m, t.timestamp||0), 0);
+                const newestStr = newestTs ? new Date(newestTs*1000).toLocaleString("en-US",{timeZone:"America/New_York", month:"short",day:"numeric",hour:"numeric",minute:"2-digit"})+" ET" : "—";
+                const ageMs = lastFetchedAt ? Date.now() - lastFetchedAt : null;
+                const ageStr = ageMs==null ? "unknown" : ageMs<60_000 ? "just now" : ageMs<3_600_000 ? Math.floor(ageMs/60_000)+"m ago" : ageMs<86_400_000 ? Math.floor(ageMs/3_600_000)+"h ago" : Math.floor(ageMs/86_400_000)+"d ago";
+                const stale = ageMs!=null && ageMs > 6*3_600_000; // > 6h
+                return (
+                  <div style={{
+                    display:"flex",alignItems:"center",gap:12,marginBottom:12,padding:"8px 12px",
+                    background:stale?"#1a1000":"#080818",
+                    border:`1px solid ${stale?"#f0c040":"#1e2040"}`,borderRadius:2,fontSize:11,letterSpacing:1,
+                  }}>
+                    <span style={{color:stale?"#f0c040":"#7080a0",fontWeight:stale?"bold":"normal"}}>
+                      {stale?"⚠ STALE":"DATA"}
+                    </span>
+                    <span style={{color:"#c0cce0"}}>Last fetched: <span style={{color:stale?"#f0c040":"#00ff9d"}}>{ageStr}</span></span>
+                    <span style={{color:"#7080a0"}}>·</span>
+                    <span style={{color:"#c0cce0"}}>Newest trade: <span style={{color:"#fff"}}>{newestStr}</span></span>
+                    <span style={{color:"#7080a0"}}>·</span>
+                    <span style={{color:"#c0cce0"}}>{trades.length.toLocaleString()} trades cached</span>
+                    <button onClick={fetchWR} disabled={fetchStatus==="loading"}
+                      style={{
+                        marginLeft:"auto",
+                        background:fetchStatus==="loading"?"#252845":"#003318",
+                        border:`1px solid ${fetchStatus==="loading"?"#1e2040":"#00ff9d"}`,
+                        color:fetchStatus==="loading"?"#7080a0":"#00ff9d",
+                        fontFamily:"'JetBrains Mono',monospace",fontSize:10,letterSpacing:2,
+                        padding:"4px 10px",cursor:fetchStatus==="loading"?"wait":"pointer",borderRadius:2,textTransform:"uppercase",
+                      }}>
+                      {fetchStatus==="loading"?"FETCHING…":"↻ REFRESH"}
+                    </button>
+                  </div>
+                );
+              })()}
 
               {/* ── 2-COLUMN LAYOUT ── */}
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12,alignItems:"start"}}>
